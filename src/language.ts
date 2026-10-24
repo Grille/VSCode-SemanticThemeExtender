@@ -1,7 +1,7 @@
 // Editor support for .str rules files: diagnostics, color swatches, hover and completion.
 
 import * as vscode from "vscode";
-import { FLAGS, parseRulesFile, Range, STYLE_NAMES } from "./cfg";
+import { CONDITION_ARGS, FLAGS, parseRulesFile, Range, STYLE_NAMES } from "./cfg";
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
@@ -24,6 +24,10 @@ const FUNCTION_DOCS: Record<string, [string, string]> = {
   darken: ["darken(${1:color}, ${2:10%})", "Lower lightness (OKLCH, 0-1) by an absolute amount: 10% subtracts 0.1."],
   saturate: ["saturate(${1:color}, ${2:20%})", "Scale chroma up by a relative amount: 20% means chroma x 1.2."],
   desaturate: ["desaturate(${1:color}, ${2:20%})", "Scale chroma down by a relative amount: 20% means chroma x 0.8."],
+  offset: [
+    "offset(${1:class}, ${2:#4EC9B0}, ${3:#86C691}, ${4|light,dark|})",
+    "Apply the change from base to target to the color: lightness, chroma and hue as measured. Exact where the color equals base. Where the optional condition holds (light, light & !contrast, ...) the lightness change flips; pass light for references measured on a dark theme.",
+  ],
   hue: ["hue(${1:color}, ${2:30})", "Rotate hue by degrees (OKLCH): hue(c, 30), 30deg or 30° also work."],
   mix: ["mix(${1:a}, ${2:b}, ${3:0.5})", "Blend two colors in OKLab; 0 = a, 1 = b."],
   alpha: ["alpha(${1:color}, ${2:50%})", "Set opacity."],
@@ -261,6 +265,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
           const styleItems = () => STYLES.map((s) => new vscode.CompletionItem(s, vscode.CompletionItemKind.EnumMember));
           const arg = styleArgument(where.value);
           if (arg === "flags") return styleItems();
+          if (arg === "condition") return [...FLAGS].map((f) => new vscode.CompletionItem(f, vscode.CompletionItemKind.EnumMember));
           const functions = ["style", ...Object.keys(FUNCTIONS)]
             .filter((name) => !(name === "style" && arg !== "top"))
             .map((name) => {
@@ -338,7 +343,7 @@ function cursorContext(before: string): CursorContext {
  * Where the cursor sits relative to style(): "flags" after its comma or a "|", "first" in its
  * first argument (a color or flags), "nested" inside another call, "top" at the start of the value.
  */
-function styleArgument(value: string): "top" | "first" | "flags" | "nested" {
+function styleArgument(value: string): "top" | "first" | "flags" | "condition" | "nested" {
   const stack: { fn: string; commas: number }[] = [];
   for (let i = 0; i < value.length; i++) {
     const c = value[i];
@@ -348,6 +353,7 @@ function styleArgument(value: string): "top" | "first" | "flags" | "nested" {
   }
   if (!stack.length) return "top";
   const top = stack[stack.length - 1];
+  if (CONDITION_ARGS[top.fn] !== undefined && top.commas === CONDITION_ARGS[top.fn]) return "condition";
   if (stack.length === 1 && top.fn === "style") {
     return top.commas > 0 || /\|\s*!?\w*$/.test(value) ? "flags" : "first";
   }

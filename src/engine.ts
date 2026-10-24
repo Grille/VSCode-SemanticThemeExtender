@@ -4,7 +4,7 @@
 // swatches), and an apply pass walks only the arms that match the active theme to produce rules.
 // Rules skip selectors the theme colors itself, unless they are inside an override block.
 
-import { Expr, Flag, flagsForUiTheme, matchesPattern, Problem, Range, RulesFile, Stmt, Value, VarDecl } from "./cfg";
+import { Expr, Flag, matchesPattern, Problem, Range, RulesFile, Stmt, Value, VarDecl } from "./cfg";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
 import { ThemeResolver } from "./theme";
@@ -32,7 +32,7 @@ export interface CompileResult {
 const NONE = Symbol("none");
 
 export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult {
-  const flags = flagsForUiTheme(resolver.theme.uiTheme);
+  const flags = resolver.flags;
   const result: CompileResult = { rules: {}, log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
   const failed = new Set<string>();
   const resolving = new Set<string>();

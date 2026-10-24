@@ -25,8 +25,9 @@ export class CycleError extends EvalError {}
 /** Thrown when no arm of a match applies to the active theme. */
 export class NoMatch extends Error {}
 
-// Away from / toward the background: lighter on dark themes, darker on light ones.
-const onDark = (ctx: EvalContext) => color.lightness(ctx.background()) < 0.5;
+// Away from / toward the background: lighter on dark themes, darker on light ones. Uses the same
+// dark / light flags as match $type, so both always agree.
+const onDark = (ctx: EvalContext) => ctx.flags.has("dark");
 const emphasize = (ctx: EvalContext, c: Color, amount = 0.1) =>
   onDark(ctx) ? color.lighten(c, amount) : color.darken(c, amount);
 
@@ -35,7 +36,8 @@ const emphasize = (ctx: EvalContext, c: Color, amount = 0.1) =>
 //   angle    30, 30deg or 30°             (degrees; % is an error)
 //   channel  0-255, 0.0-1.0 or 0%-100%    (integers vs decimals decide the scale)
 //   alpha    0.5, 50%, or 0-255
-type ArgKind = "color" | "amount" | "angle" | "channel" | "alpha";
+//   condition  a $type pattern like light or light & !contrast, true for the active theme
+type ArgKind = "color" | "amount" | "angle" | "channel" | "alpha" | "condition";
 
 interface Num {
   num: number;
@@ -51,7 +53,13 @@ const KIND_TEXT: Record<ArgKind, string> = {
   angle: "an angle in degrees like 30",
   channel: "a channel value: 0-255, 0.0-1.0 or a percentage",
   alpha: "an opacity like 0.5 or 50%",
+  condition: "a condition like light or light & !contrast",
 };
+
+// The change from base to target, applied to c; where the condition holds the lightness change is
+// flipped, e.g. light for references measured on a dark theme, so contrast moves the same way.
+const offset = (c: Color, base: Color, target: Color, flipLightness = false) =>
+  color.applyOffset(c, color.measureOffset(base, target), flipLightness);
 
 export const FUNCTIONS: Record<
   string,
@@ -65,6 +73,7 @@ export const FUNCTIONS: Record<
   saturate: { sig: ["color", "amount"], fn: color.saturate },
   desaturate: { sig: ["color", "amount"], fn: color.desaturate },
   hue: { sig: ["color", "angle"], fn: color.rotateHue },
+  offset: { sig: ["color", "color", "color", "condition"], optional: 1, fn: offset },
   alpha: { sig: ["color", "alpha"], fn: color.withAlpha },
   mix: { sig: ["color", "color", "amount"], optional: 1, fn: (a, b, t = 0.5) => color.mix(a, b, t) },
 };
@@ -91,8 +100,15 @@ function convert(n: Num, kind: ArgKind, fn: string, range: Range): number {
       if (!n.decimal && n.num > 255) throw wrong("; integers are 0-255");
       return n.decimal ? n.num : n.num / 255;
     case "color":
+    case "condition":
       throw wrong(", not a number");
   }
+}
+
+/** The parser reads condition arguments as $type patterns; here they become true or false. */
+function conditionArg(e: Expr, fn: string, ctx: EvalContext): boolean {
+  if (e.kind === "condition") return matchesPattern(e.pattern, ctx.flags, ctx.themeId);
+  throw new EvalError(`${fn}() expects ${KIND_TEXT.condition}`, e.range);
 }
 
 /** rgb(0, 100, 200) is 0-255 and rgb(0.5, 1.0, 0.2) is 0-1; mixing the two is almost always a mistake. */
@@ -118,6 +134,8 @@ function evalArg(e: Expr, ctx: EvalContext): Color | Num {
       return ctx.variable(e.name, e.range);
     case "ref":
       return ctx.ref(e.name, e.range);
+    case "condition":
+      throw new EvalError("A condition is only valid as the last argument of offset()", e.range);
     case "match": {
       const arm = e.arms.find((a) => matchesPattern(a.pattern, ctx.flags, ctx.themeId));
       if (!arm) throw new NoMatch();
@@ -130,10 +148,14 @@ function evalArg(e: Expr, ctx: EvalContext): Color | Num {
       if (e.args.length < min || e.args.length > f.sig.length) {
         throw new EvalError(`${e.fn}() takes ${min === f.sig.length ? min : `${min}-${f.sig.length}`} arguments`, e.range);
       }
-      const raw = e.args.map((a) => ({ v: evalArg(a, ctx), range: a.range }));
-      if (f.sig[0] === "channel") checkChannelScale(raw, e.fn);
+      const raw = e.args.map((a, i) => ({
+        v: f.sig[i] === "condition" ? conditionArg(a, e.fn, ctx) : evalArg(a, ctx),
+        range: a.range,
+      }));
+      if (f.sig[0] === "channel") checkChannelScale(raw as { v: Color | Num; range: Range }[], e.fn);
       const args = raw.map(({ v, range }, i) => {
         const kind = f.sig[i];
+        if (typeof v === "boolean") return v;
         if (!isNum(v)) {
           if (kind !== "color") throw new EvalError(`${e.fn}() argument ${i + 1} expects ${KIND_TEXT[kind]}, not a color`, range);
           return v;

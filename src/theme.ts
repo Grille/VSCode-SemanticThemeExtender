@@ -4,6 +4,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
+import { Flag, themeFlags } from "./cfg";
+import { lightness, parseHex } from "./color";
 
 export interface ThemeData {
   id: string;
@@ -188,6 +190,12 @@ export class ThemeResolver {
 
   get background(): string {
     return this.theme.colors["editor.background"] ?? (this.theme.dark ? "#1E1E1E" : "#FFFFFF");
+  }
+
+  /** $type flags; the one place that decides whether the theme counts as dark or light. */
+  get flags(): Set<Flag> {
+    const bg = parseHex(this.background);
+    return themeFlags(bg ? lightness(bg) < 0.5 : this.theme.dark, this.theme.uiTheme);
   }
 
   /** The theme's own semantic rule for a token type (or one of its superTypes), if any. */

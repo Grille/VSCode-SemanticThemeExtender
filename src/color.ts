@@ -104,6 +104,54 @@ export const desaturate = (c: Color, amount: number) => saturate(c, -amount);
 export const rotateHue = (c: Color, degrees: number) => adjustLch(c, (x) => ({ ...x, h: x.h + degrees }));
 export const withAlpha = (c: Color, alpha: number): Color => ({ ...c, a: Math.min(1, Math.max(0, alpha)) });
 
+/** Below this chroma a color is close to gray: its hue is meaningless and ratios explode. */
+const NEAR_GRAY = 0.02;
+
+export interface Offset {
+  /** Lightness change, as a fraction of the room the base had in that direction (toward white or black). */
+  fL: number;
+  /** Absolute lightness change, for display. */
+  dL: number;
+  /** Chroma ratio, or an absolute change (ratio undefined) when the base is near gray. */
+  ratio?: number;
+  dC: number;
+  /** Hue rotation in degrees, 0 when base or target is near gray. */
+  dh: number;
+  dA: number;
+}
+
+/** The OKLCH change that turns base into target. */
+export function measureOffset(base: Color, target: Color): Offset {
+  const b = toLch(rgbToLab(base));
+  const t = toLch(rgbToLab(target));
+  const gray = b.C < NEAR_GRAY || t.C < NEAR_GRAY;
+  const dL = t.L - b.L;
+  const room = dL >= 0 ? 1 - b.L : b.L;
+  return {
+    fL: room > 1e-6 ? dL / room : 0,
+    dL,
+    ratio: b.C < NEAR_GRAY ? undefined : t.C / b.C,
+    dC: t.C - b.C,
+    dh: gray ? 0 : ((((t.h - b.h) % 360) + 540) % 360) - 180,
+    dA: target.a - base.a,
+  };
+}
+
+/**
+ * Applies the change from base to target to c; invertLightness flips the lightness direction.
+ * Lightness moves the same fraction of the remaining room, so a light color can't overshoot white.
+ */
+export function applyOffset(c: Color, o: Offset, invertLightness = false): Color {
+  return adjustLch(withAlpha(c, c.a + o.dA), (x) => ({
+    L: (() => {
+      const up = (o.fL >= 0) !== invertLightness;
+      return up ? x.L + Math.abs(o.fL) * (1 - x.L) : x.L - Math.abs(o.fL) * x.L;
+    })(),
+    C: Math.max(0, o.ratio === undefined ? x.C + o.dC : x.C * o.ratio),
+    h: x.h + o.dh,
+  }));
+}
+
 export function mix(a: Color, b: Color, t: number): Color {
   const x = rgbToLab(a), y = rgbToLab(b);
   const k = (p: number, q: number) => p + (q - p) * t;

@@ -35,7 +35,7 @@
     { "match": "\\b(dark|light|contrast)\\b(?!\\s*(?:=|\\())", "name": "constant.language.flag.semantic-theme-rules" },
     { "match": "\\b_\\b", "name": "constant.language.wildcard.semantic-theme-rules" },
     { "match": "\\b(bold|italic|underline|strikethrough)\\b(?!\\s*\\()", "name": "storage.modifier.style.semantic-theme-rules" },
-    { "match": "\\b(style|emphasize|soften|lighten|darken|saturate|desaturate|hue|mix|alpha|rgba?)(?=\\s*\\()", "name": "support.function.semantic-theme-rules" },
+    { "match": "\\b(style|offset|emphasize|soften|lighten|darken|saturate|desaturate|hue|mix|alpha|rgba?)(?=\\s*\\()", "name": "support.function.semantic-theme-rules" },
     { "match": "[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:%|deg\\b|°)?", "name": "constant.numeric.semantic-theme-rules" },
     { "match": "\\b[A-Za-z_](?:[\\w.:]|-(?=\\w))*", "name": "variable.language.theme-ref.semantic-theme-rules" },
     { "match": "[{}()]", "name": "punctuation.section.semantic-theme-rules" },

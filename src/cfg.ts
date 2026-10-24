@@ -45,6 +45,8 @@ export type Expr =
   | { kind: "ref"; name: string; range: Range }
   | { kind: "num"; value: number; unit: NumUnit; decimal: boolean; range: Range }
   | { kind: "call"; fn: string; args: Expr[]; range: Range; nameRange: Range }
+  /** A $type condition like "light & !contrast", only valid where a function expects one. */
+  | { kind: "condition"; pattern: Pattern; range: Range }
   | { kind: "match"; subject: Subject; arms: Arm<Expr>[]; range: Range };
 
 /** "10%" is percent, "30deg" / "30°" degrees; decimal tells "1.0" from "1" (0-1 vs 0-255 in rgb). */
@@ -106,7 +108,10 @@ export const FLAGS: Flag[] = ["dark", "light", "contrast"];
 export const BUILTINS = new Set(["theme", "type", "none"]);
 export const STYLE_NAMES = new Set(["bold", "italic", "underline", "strikethrough"]);
 /** Color functions other than style(); kept in sync with FUNCTIONS in rules.ts. */
-export const FUNCTION_NAMES = new Set(["emphasize", "soften", "lighten", "darken", "saturate", "desaturate", "hue", "mix", "alpha", "rgb", "rgba"]);
+export const FUNCTION_NAMES = new Set(["emphasize", "soften", "offset", "lighten", "darken", "saturate", "desaturate", "hue", "mix", "alpha", "rgb", "rgba"]);
+
+/** Function arguments that take a $type condition, by position: offset(c, base, target, light). */
+export const CONDITION_ARGS: Record<string, number> = { offset: 3 };
 
 /** The four theme kinds as flag sets, for static pattern checks. */
 export const THEME_KINDS: Set<Flag>[] = [
@@ -116,17 +121,15 @@ export const THEME_KINDS: Set<Flag>[] = [
   new Set(["light", "contrast"]),
 ];
 
-export function flagsForUiTheme(uiTheme: string): Set<Flag> {
-  switch (uiTheme) {
-    case "vs":
-      return new Set(["light"]);
-    case "hc-black":
-      return new Set(["dark", "contrast"]);
-    case "hc-light":
-      return new Set(["light", "contrast"]);
-    default:
-      return new Set(["dark"]);
-  }
+/**
+ * The single source for $type and every contrast-aware function: dark / light from what is
+ * actually on screen (the editor background), contrast from the theme's declared kind, since
+ * high contrast can't be measured reliably.
+ */
+export function themeFlags(darkBackground: boolean, uiTheme: string): Set<Flag> {
+  const flags = new Set<Flag>([darkBackground ? "dark" : "light"]);
+  if (uiTheme === "hc-black" || uiTheme === "hc-light") flags.add("contrast");
+  return flags;
 }
 
 export function matchesPattern(p: Pattern, flags: Set<Flag>, themeId: string): boolean {
@@ -361,13 +364,19 @@ export function parseRulesFile(text: string): RulesFile {
           }
         };
         const args: Expr[] = [];
+        // Arguments that are $type conditions ("light & !contrast") rather than colors.
+        const parseArg = (): Expr => {
+          if (CONDITION_ARGS[t.text] !== args.length) return parseExpr();
+          const pattern = parsePattern("type");
+          return { kind: "condition", pattern, range: pattern.range };
+        };
         unclosed();
         if (!isPunct(peek(), ")")) {
-          args.push(parseExpr());
+          args.push(parseArg());
           while (isPunct(peek(), ",")) {
             next();
             unclosed();
-            args.push(parseExpr());
+            args.push(parseArg());
           }
         }
         unclosed();
@@ -599,7 +608,9 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;
 ;   class, function, ...     the active theme's color for a semantic token type
 ;   variable.language        the active theme's color for a TextMate scope (names with a dot)
-;   functions    emphasize soften (contrast to the background), lighten darken
+;   functions    offset(c, base, target[, condition]): apply the change from base to target;
+;                the lightness change flips where the condition holds, e.g. light
+;                emphasize soften (contrast to the background), lighten darken
 ;                saturate desaturate (amount in %), hue (degrees), mix(a, b, 0.5),
 ;                alpha(c, 50%), rgb(r, g, b[, a])
 ;   style(c, bold | !italic)  font styles; style(underline) keeps the color
@@ -609,10 +620,12 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   match $theme { "Dark Modern" | "*Light*" { rules } }                 a block of rules
 ;   later rules override earlier ones for the same selector
 
-struct        = hue(class, -35)
-interface     = mix(class, function, 0.5)
-enum          = mix(class, function, 0.5)
-typeParameter = mix(class, function, 0.5)
+; Visual Studio's relation between class and the other type colors, measured on its dark theme:
+; exact on Dark Modern / Dark+, carried over to any other theme, flipped in lightness on light ones.
+struct        = offset(class, #4EC9B0, #86C691, light)
+interface     = offset(class, #4EC9B0, #B8D7A3, light)
+enum          = offset(class, #4EC9B0, #B8D7A3, light)
+typeParameter = offset(class, #4EC9B0, #B8D7A3, light)
 
 selfParameter:python = variable.language
 clsParameter:python  = variable.language

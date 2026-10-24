@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { DEFAULT_RULES, flagsForUiTheme, parseRulesFile } from "./cfg";
+import { DEFAULT_RULES, parseRulesFile } from "./cfg";
 import { compile } from "./engine";
 import { LANGUAGE_ID, registerLanguage } from "./language";
 import { RULES_URI, RulesStore } from "./store";
@@ -179,7 +179,7 @@ function showResolved() {
   output.appendLine(`\n== Resolved colors for theme '${r.theme.id}'`);
   output.appendLine(`   file: ${r.theme.file}`);
   output.appendLine(`   semanticHighlighting: ${r.theme.semanticHighlighting ?? "(not set)"}`);
-  output.appendLine(`   $type: ${[...flagsForUiTheme(r.theme.uiTheme)].join(" & ")}   background: ${r.background}`);
+  output.appendLine(`   $type: ${[...r.flags].join(" & ")}   background: ${r.background}`);
   for (const type of STANDARD_TYPES) {
     const x = r.resolve(type);
     output.appendLine(`   @${type.padEnd(14)} ${x.color.padEnd(10)} ${x.source}`);

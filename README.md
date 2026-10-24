@@ -22,8 +22,9 @@ $accent = match $type {
 }
 
 ; rules fill what the theme leaves: skipped where the theme colors the token itself
-struct        = hue(class, -35)
-interface     = mix(class, function, 0.5)
+; offset: Visual Studio's class -> struct change, applied to this theme's class color
+struct        = offset(class, #4EC9B0, #86C691, light)
+interface     = offset(class, #4EC9B0, #B8D7A3, light)
 typeParameter = mix(class, function, 0.5)
 selfParameter:python = variable.language
 
@@ -53,12 +54,13 @@ match $theme {
 | `variable.language` | The active theme's color for a TextMate scope (any name with a dot) |
 | `$name = color` | Variable: top level only, assigned once |
 | `#86C691`, `rgb(134, 198, 145)` | A literal color. `rgb` takes integers 0-255, decimals 0.0-1.0 (`rgb(0.5, 1.0, 0.2)`) or percentages, plus an optional alpha |
+| `offset(c, base, target, light)` | Apply the change from `base` to `target` to `c`: lightness (as a share of the room toward white or black), chroma ratio, hue rotation. Exact where `c` equals `base`. Where the optional condition holds (`light`, `light & !contrast`, ...), the lightness direction flips: for references measured on a dark theme, pass `light` |
 | `emphasize(c, 10%)`, `soften(c, 10%)` | More / less contrast to the editor background: lighter on dark themes, darker on light ones |
 | `lighten(c, 10%)`, `darken` | Change lightness (OKLCH, 0-1) by an absolute amount: 10% adds or subtracts 0.1 |
 | `saturate(c, 20%)`, `desaturate` | Scale chroma relatively: 20% means x 1.2 or x 0.8 |
 | `hue(c, 30)` | Rotate the hue by degrees; `30deg` and `30°` also work |
 | `mix(a, b, 0.5)`, `alpha(c, 50%)` | Blend two colors, set opacity |
-| `style(c, bold | !italic)` | Font styles; `style(underline)` keeps the theme's color |
+| `style(c, bold \| !italic)` | Font styles; `style(underline)` keeps the theme's color |
 | `$none` | No rule for this selector |
 
 Numbers keep their unit: `10%` is the same as `0.1` wherever an amount is expected, and a
@@ -74,9 +76,10 @@ bottom and the first match wins; `_` matches anything.
 | `$type` | Flags `dark`, `light`, `contrast`, combined with `&` (and), `|` (or), `!` (not) and parentheses. A high-contrast dark theme is `dark & contrast` |
 | `$theme` | Quoted theme names with `*` wildcards: `"Dark Modern" | "*Light*"` |
 
-`$type` comes from the type a theme declares; `emphasize` and `soften` instead look at the
-actual brightness of its editor background. Impossible or unreachable arms, and value
-matches that don't cover every theme type, are flagged as you type.
+`dark` and `light` are decided once, by the actual brightness of the theme's editor
+background, and mean the same everywhere: in `match $type`, in `offset` conditions and in
+`emphasize` / `soften`. `contrast` comes from the theme's declared type. Impossible or
+unreachable arms, and value matches that don't cover every theme type, are flagged as you type.
 
 The editor shows color swatches for every value as computed for the current theme,
 hover info for theme colors, completion for token types and functions, and errors as
