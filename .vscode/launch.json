@@ -10,6 +10,16 @@
       "preLaunchTask": "compile"
     },
     {
+      // Copilot Chat logs "EXTENSION WILL BE BROKEN" in development hosts right before the
+      // extension host crashes (exit code 134); this keeps every other extension.
+      "name": "Run Extension (without Copilot Chat)",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "--disable-extension=github.copilot-chat"],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "compile"
+    },
+    {
       // Only this extension: no language servers (so no semantic tokens), but the rules editor,
       // swatches and writing settings work. Useful when other extensions crash the dev host.
       "name": "Run Extension (no other extensions)",

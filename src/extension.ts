@@ -2,15 +2,13 @@ import * as vscode from "vscode";
 import { DEFAULT_RULES, parseRulesFile } from "./cfg";
 import { compile } from "./engine";
 import { LANGUAGE_ID, registerLanguage } from "./language";
+import { Customizations, normalizeOwned, SEMANTIC_SETTING, strip, TEXTMATE_SETTING, UI_SETTING, write } from "./settings";
 import { RULES_URI, RulesStore } from "./store";
 import { activeThemeId, loadTheme, STANDARD_TYPES, ThemeResolver, TokenRegistry } from "./theme";
 
-const TARGET = "editor.semanticTokenColorCustomizations";
-// Rule keys this extension wrote per theme section, so user-written keys are never touched.
+// Entries this extension wrote, so user-written ones are never touched.
 const OWNED_KEY = "semanticThemeExtender.owned";
 const SYNC_POLL_MS = 30_000;
-
-type Owned = Record<string, string[]>;
 
 let output: vscode.OutputChannel;
 let state: vscode.Memento;
@@ -21,6 +19,9 @@ export function activate(context: vscode.ExtensionContext) {
   output = vscode.window.createOutputChannel("Semantic Theme Extender");
   state = context.globalState;
   store = new RulesStore(context.globalState, [OWNED_KEY]);
+  // First, so a rules tab restored at startup can be read as early as possible.
+  context.subscriptions.push(vscode.workspace.registerFileSystemProvider("semantic-theme-rules", store, { isCaseSensitive: true }));
+  store.announce();
 
   const language = registerLanguage(context, {
     resolver: () => resolver(),
@@ -40,7 +41,6 @@ export function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     output,
-    vscode.workspace.registerFileSystemProvider("semantic-theme-rules", store, { isCaseSensitive: true }),
     store.onDidChangeText(() => schedule(false)),
     vscode.commands.registerCommand("semanticThemeExtender.openRules", openRules),
     vscode.commands.registerCommand("semanticThemeExtender.resetRules", resetRules),
@@ -106,71 +106,66 @@ async function resetRules() {
   }
 }
 
+const globalValue = (setting: string) =>
+  vscode.workspace.getConfiguration().inspect<Record<string, any>>(setting)?.globalValue;
+
+const SETTINGS: Record<keyof Customizations, string> = { semantic: SEMANTIC_SETTING, textMate: TEXTMATE_SETTING, ui: UI_SETTING };
+
+const currentSettings = () => ({
+  semantic: globalValue(SEMANTIC_SETTING),
+  textMate: globalValue(TEXTMATE_SETTING),
+  ui: globalValue(UI_SETTING),
+});
+
+/** Writes each changed setting; true when any was written. */
+async function writeSettings(before: Partial<Customizations>, after: Customizations) {
+  let wrote = false;
+  for (const key of Object.keys(SETTINGS) as (keyof Customizations)[]) {
+    wrote = (await updateIfChanged(SETTINGS[key], before[key], after[key])) || wrote;
+  }
+  return wrote;
+}
+
+/** Writes a setting if it changed; an empty object removes it from settings.json entirely. */
+async function updateIfChanged(setting: string, before: Record<string, any> | undefined, after: Record<string, any>) {
+  if (JSON.stringify(before ?? {}) === JSON.stringify(after)) return false;
+  await vscode.workspace
+    .getConfiguration()
+    .update(setting, Object.keys(after).length ? after : undefined, vscode.ConfigurationTarget.Global);
+  return true;
+}
+
 async function apply(verbose = false) {
   const r = resolver();
   if (!r) return;
-  const { rules, log } = compile(parseRulesFile(store.text), r);
-  const sectionKey = `[${r.theme.id}]`;
+  const result = compile(parseRulesFile(store.text), r);
+  const { rules, textMate, ui, log } = result;
+  const section = `[${r.theme.id}]`;
 
-  const config = vscode.workspace.getConfiguration();
-  const current = (config.inspect<Record<string, any>>(TARGET)?.globalValue ?? {}) as Record<string, any>;
-  const next = JSON.parse(JSON.stringify(current));
-  const owned = state.get<Owned>(OWNED_KEY) ?? {};
-
-  const section = { ...(next[sectionKey] ?? {}) };
-  const sectionRules = { ...(section.rules ?? {}) };
-  for (const k of owned[sectionKey] ?? []) {
-    if (k === "$enabled") delete section.enabled;
-    else delete sectionRules[k];
-  }
-  const ownedNow = Object.keys(rules);
-  Object.assign(sectionRules, rules);
-
+  const before = currentSettings();
   // Themes that don't opt into semantic highlighting would ignore the rules otherwise.
-  if (ownedNow.length && r.theme.semanticHighlighting !== true && section.enabled === undefined) {
-    section.enabled = true;
-    ownedNow.push("$enabled");
-  }
-
-  if (Object.keys(sectionRules).length) section.rules = sectionRules;
-  else delete section.rules;
-  if (Object.keys(section).length) next[sectionKey] = section;
-  else delete next[sectionKey];
-
-  owned[sectionKey] = ownedNow;
-  if (!ownedNow.length) delete owned[sectionKey];
+  const enable = r.theme.semanticHighlighting !== true;
+  const next = write(strip(before, normalizeOwned(state.get(OWNED_KEY))), section, result, enable);
 
   output.appendLine(`\n== ${new Date().toLocaleTimeString()} theme '${r.theme.id}' (${r.theme.file})`);
   log.forEach((l) => output.appendLine(l));
 
-  if (JSON.stringify(next) !== JSON.stringify(current)) {
-    await config.update(TARGET, Object.keys(next).length ? next : undefined, vscode.ConfigurationTarget.Global);
-    output.appendLine(`wrote ${ownedNow.length} entries to ${TARGET}["${sectionKey}"]`);
-  } else {
-    output.appendLine("no changes");
-  }
-  await state.update(OWNED_KEY, owned);
+  // Store ownership first: if a write fails half way, the next apply can still clean up.
+  await state.update(OWNED_KEY, next.owned);
+  const wrote = await writeSettings(before, next);
+  output.appendLine(
+    wrote
+      ? `wrote ${Object.keys(rules).length} semantic, ${Object.keys(textMate).length} TextMate and ${Object.keys(ui).length} UI color rules for ${section}`
+      : "no changes",
+  );
   if (verbose) output.show(true);
 }
 
 async function removeAll() {
-  const config = vscode.workspace.getConfiguration();
-  const current = (config.inspect<Record<string, any>>(TARGET)?.globalValue ?? {}) as Record<string, any>;
-  const next = JSON.parse(JSON.stringify(current));
-  const owned = state.get<Owned>(OWNED_KEY) ?? {};
-  for (const [sectionKey, keys] of Object.entries(owned)) {
-    const section = next[sectionKey];
-    if (!section) continue;
-    for (const k of keys) {
-      if (k === "$enabled") delete section.enabled;
-      else delete section.rules?.[k];
-    }
-    if (section.rules && !Object.keys(section.rules).length) delete section.rules;
-    if (!Object.keys(section).length) delete next[sectionKey];
-  }
-  await config.update(TARGET, Object.keys(next).length ? next : undefined, vscode.ConfigurationTarget.Global);
-  await state.update(OWNED_KEY, {});
-  vscode.window.showInformationMessage("Semantic Theme Extender: removed all generated semantic color rules.");
+  const before = currentSettings();
+  await writeSettings(before, strip(before, normalizeOwned(state.get(OWNED_KEY))));
+  await state.update(OWNED_KEY, undefined);
+  vscode.window.showInformationMessage("Semantic Theme Extender: removed all generated color rules.");
 }
 
 function showResolved() {

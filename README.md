@@ -43,15 +43,23 @@ match $theme {
     interface = $none
   }
 }
+
+; UI colors: bracket pair colors that follow the theme's own palette
+colors.editorBracketHighlight.foreground1 = soften(keyword, 15%)
+colors.editorBracketHighlight.foreground2 = soften(function, 15%)
+colors.editorBracketHighlight.foreground3 = soften(type, 15%)
 ```
 
 | Syntax | Meaning |
 | --- | --- |
-| `selector = value` | Rule; skipped where the theme colors that token itself. Later rules override earlier ones |
+| `selector = value` | Rule; skipped where the theme has a rule for exactly that selector. Later rules override earlier ones |
 | `override selector = value`, `override { rules }` | Rules that also replace the theme's own colors |
-| `struct`, `parameter:python`, `*.static` | Selector: a semantic token type, optionally with modifiers or a language |
-| `class`, `function` | The active theme's color for that semantic token type |
-| `variable.language` | The active theme's color for a TextMate scope (any name with a dot) |
+| `struct`, `parameter:python`, `*.static` | Semantic selector: a token type, optionally with known modifiers or a language. Also sets the TextMate scope VS Code falls back to (`struct` → `entity.name.type.struct`), so the color shows before the language server is ready |
+| `string.quoted.docstring.python` | TextMate scope: any other name with a dot. Sets only the TextMate color |
+| `colors.editorBracketHighlight.foreground1` | UI color: `colors.` plus any color ID VS Code or an installed extension knows. Takes a color, not `style()` |
+| `class`, `function` (as a value) | The active theme's color for that semantic selector |
+| `variable.language` (as a value) | The active theme's color for that TextMate scope |
+| `colors.editor.background` (as a value) | The active theme's UI color, or VS Code's default where the theme doesn't set it |
 | `$name = color` | Variable: top level only, assigned once |
 | `#86C691`, `rgb(134, 198, 145)` | A literal color. `rgb` takes integers 0-255, decimals 0.0-1.0 (`rgb(0.5, 1.0, 0.2)`) or percentages, plus an optional alpha |
 | `offset(c, base, target, light)` | Apply the change from `base` to `target` to `c`: lightness (as a share of the room toward white or black), chroma ratio, hue rotation. Exact where `c` equals `base`. Where the optional condition holds (`light`, `light & !contrast`, ...), the lightness direction flips: for references measured on a dark theme, pass `light` |
@@ -82,7 +90,7 @@ background, and mean the same everywhere: in `match $type`, in `offset` conditio
 unreachable arms, and value matches that don't cover every theme type, are flagged as you type.
 
 The editor shows color swatches for every value as computed for the current theme,
-hover info for theme colors, completion for token types and functions, and errors as
+hover info for theme colors, completion for token types, UI colors and functions, and errors as
 you type.
 
 ## Commands
@@ -95,10 +103,23 @@ you type.
 
 ## How it works
 
-The generated colors are written to `editor.semanticTokenColorCustomizations` under the
-active theme's name (e.g. `"[Dark Modern]"`). Rules you wrote there yourself are never
-touched. Because they are regular settings, other machines get the colors through
-Settings Sync even before the extension is installed there.
+VS Code has no API for injecting token colors, so the generated colors are written to your
+user settings: semantic rules to `editor.semanticTokenColorCustomizations`, TextMate rules
+to `editor.tokenColorCustomizations`, UI colors to `workbench.colorCustomizations`, all
+under the active theme's name (e.g.
+`"[Dark Modern]"`). Only the active theme gets a section; switching themes moves it.
+Entries you wrote yourself, or edited after the extension wrote them, are never touched,
+and **Remove Generated Rules** takes out everything else.
+
+"Already colored by the theme" means an exact match: a theme rule for `struct` blocks your
+`struct` rule (unless it's in `override`), but not `recordStruct`; a theme rule for
+`string` doesn't block `string.quoted.docstring.python`. A more specific rule of yours is a
+deliberate refinement. TextMate has a single font style per rule, so `style()` flags replace
+the whole style there.
+
+Bracket pair colorization uses `editorBracketHighlight.foreground1` to `foreground6`.
+VS Code's defaults for 4 to 6 are transparent, which means "not used": brackets cycle
+through the first three levels unless you set more.
 
 Semantic colors need a language extension that provides semantic tokens, such as
 C# Dev Kit, Pylance, or the built-in TypeScript support.
@@ -111,3 +132,10 @@ npm run compile
 ```
 
 Press <kbd>F5</kbd> to launch an Extension Development Host.
+
+The list of UI color IDs and their defaults ([src/uiColors.ts](src/uiColors.ts)) is
+generated from VS Code's own code, since VS Code has no API for it:
+
+```sh
+node scripts/generate-ui-colors.js "<VS Code install>/resources/app/out/vs/workbench/workbench.desktop.main.js"
+```

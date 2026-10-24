@@ -6,3 +6,4 @@ tsconfig.json
 .gitignore
 theme_extension.cfg
 *.vsix
+scripts/**

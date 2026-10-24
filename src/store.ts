@@ -38,6 +38,14 @@ export class RulesStore implements vscode.FileSystemProvider {
     }
   }
 
+  /**
+   * Editors restored at startup may have tried to read the file before this provider was
+   * registered and show it empty; a change event makes them read it again.
+   */
+  announce() {
+    this.changed.fire([{ type: vscode.FileChangeType.Changed, uri: RULES_URI }]);
+  }
+
   private noteChange() {
     this.lastSeen = this.text;
     this.mtime = Date.now();

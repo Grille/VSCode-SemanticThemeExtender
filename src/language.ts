@@ -5,7 +5,7 @@ import { CONDITION_ARGS, FLAGS, parseRulesFile, Range, STYLE_NAMES } from "./cfg
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
-import { ThemeResolver } from "./theme";
+import { isUiColor, ThemeResolver, UI_PREFIX } from "./theme";
 
 export const LANGUAGE_ID = "semantic-theme-rules";
 
@@ -122,6 +122,19 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
       return item;
     });
 
+  const uiColorItems = (resolver: ThemeResolver | undefined) =>
+    (resolver?.registry.allUiColors() ?? []).map((id) => {
+      const item = new vscode.CompletionItem(UI_PREFIX + id, vscode.CompletionItemKind.Color);
+      try {
+        const r = resolver!.uiColor(id);
+        item.detail = r.color;
+        item.documentation = `${r.source} in ${resolver!.theme.id}`;
+      } catch (e) {
+        item.documentation = (e as Error).message;
+      }
+      return item;
+    });
+
   const snippet = (label: string, body: string, kind: vscode.CompletionItemKind, docs?: string) => {
     const item = new vscode.CompletionItem(label, kind);
     item.insertText = new vscode.SnippetString(body);
@@ -201,9 +214,19 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
         } catch (e) {
           md.appendMarkdown((e as Error).message);
         }
-        if (isSelector) {
+        if (isSelector && isUiColor(word)) {
+          const generated = result?.ui[word.slice(UI_PREFIX.length)];
+          md.appendMarkdown("\n\nUI color.");
+          md.appendMarkdown(generated !== undefined ? `\n\nGenerated: \`${generated}\`` : "\n\nNo rule generated for this theme.");
+        } else if (isSelector) {
+          const semantic = resolver.registry.isSemantic(word);
           const generated = result?.rules[word];
-          md.appendMarkdown(generated === undefined ? "\n\nNo rule generated for this theme." : `\n\nGenerated: \`${JSON.stringify(generated)}\``);
+          const scopes = semantic ? resolver.registry.ownScopes(word) : [word];
+          const textMate = scopes.filter((s) => result?.textMate[s]).map((s) => `\`${s}\` = \`${JSON.stringify(result!.textMate[s])}\``);
+          md.appendMarkdown(`\n\n${semantic ? "Semantic selector" : "TextMate scope"}.`);
+          if (generated !== undefined) md.appendMarkdown(`\n\nGenerated: \`${JSON.stringify(generated)}\``);
+          if (textMate.length) md.appendMarkdown(`\n\nTextMate: ${textMate.join(", ")}`);
+          if (generated === undefined && !textMate.length) md.appendMarkdown("\n\nNo rule generated for this theme.");
         }
         return new vscode.Hover(md, range);
       },
@@ -256,6 +279,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
           if (where.kind === "selector") {
             return [
               ...tokenTypeItems(resolver, vscode.CompletionItemKind.Property),
+              ...uiColorItems(resolver),
               matchSnippet(false),
               snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
             ];
@@ -272,7 +296,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               const [body, docs] = FUNCTION_DOCS[name] ?? [`${name}($1)`, ""];
               return snippet(name, body, vscode.CompletionItemKind.Function, docs);
             });
-          const items = [...functions, ...tokenTypeItems(resolver, vscode.CompletionItemKind.Color), matchSnippet(true)];
+          const items = [...functions, ...tokenTypeItems(resolver, vscode.CompletionItemKind.Color), ...uiColorItems(resolver), matchSnippet(true)];
           return arg === "first" ? [...styleItems(), ...items] : items;
         },
       },

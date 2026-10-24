@@ -2,7 +2,9 @@
 //
 //   ; comment
 //   $name = color                      variable: top level only, assigned once, usable anywhere
-//   selector = value                   rule; skipped where the theme colors the token itself
+//   selector = value                   rule; skipped where the theme has a rule for exactly that selector
+//                                      semantic selectors (struct, variable.readonly) also set their
+//                                      TextMate fallback scope; other dotted names are TextMate scopes
 //   override rule | override { rules }  rules that also replace the theme's own colors
 //   match $type { dark & contrast { rules } _ { rules } }      block: rules for matching themes
 //
@@ -602,12 +604,16 @@ export function parseRulesFile(text: string): RulesFile {
 
 export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to apply; synced via Settings Sync.
 ;
-;   selector = value         e.g. struct = hue(class, -35); skipped where the theme colors it itself
+;   selector = value         e.g. struct = hue(class, -35); skipped where the theme has a rule for exactly it
+;                            semantic selectors also set their TextMate fallback scope;
+;                            other dotted names are TextMate scopes: string.quoted.docstring.python = #6A9955
+;   colors.<id> = color      a UI color, e.g. colors.editorBracketHighlight.foreground1 = soften(keyword)
 ;   override rule            also replaces the theme's own color; override { rules } for several
 ;   $name = color            variable: top level, assigned once, use as $name
 ;
 ;   class, function, ...     the active theme's color for a semantic token type
 ;   variable.language        the active theme's color for a TextMate scope (names with a dot)
+;   colors.editor.background the active theme's UI color
 ;   functions    offset(c, base, target[, condition]): apply the change from base to target;
 ;                the lightness change flips where the condition holds, e.g. light
 ;                emphasize soften (contrast to the background), lighten darken

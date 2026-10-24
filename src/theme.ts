@@ -6,6 +6,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { Flag, themeFlags } from "./cfg";
 import { lightness, parseHex } from "./color";
+import { UI_COLORS } from "./uiColors";
 
 export interface ThemeData {
   id: string;
@@ -51,7 +52,49 @@ const STANDARD_SCOPES: Record<string, string[]> = {
   decorator: ["entity.name.decorator", "entity.name.function"],
 };
 
+// Fallback scopes VS Code defines for type + modifier combinations.
+const MODIFIER_SCOPES: Record<string, string[]> = {
+  "variable.readonly": ["variable.other.constant"],
+  "property.readonly": ["variable.other.constant.property"],
+  "type.defaultLibrary": ["support.type"],
+  "class.defaultLibrary": ["support.class"],
+  "interface.defaultLibrary": ["support.class"],
+  "variable.defaultLibrary": ["support.variable", "support.other.variable"],
+  "variable.defaultLibrary.readonly": ["support.constant"],
+  "property.defaultLibrary": ["support.variable.property"],
+  "property.defaultLibrary.readonly": ["support.constant.property"],
+  "function.defaultLibrary": ["support.function"],
+  "member.defaultLibrary": ["support.function"],
+};
+
+const STANDARD_MODIFIERS = ["declaration", "definition", "readonly", "static", "deprecated", "abstract", "async", "modification", "documentation", "defaultLibrary"];
+
+/** Top-level TextMate scopes that are not semantic token types, so they are valid without a dot. */
+const TEXTMATE_ROOTS = new Set(["constant", "entity", "invalid", "markup", "meta", "punctuation", "storage", "support", "source", "text"]);
+
 export const STANDARD_TYPES = Object.keys(STANDARD_SCOPES);
+
+/** UI colors (the theme's "colors" section) are written colors.<id>, e.g. colors.editor.background. */
+export const UI_PREFIX = "colors.";
+
+export const isUiColor = (name: string) => name.startsWith(UI_PREFIX);
+
+/** Default values for [dark, light, hcDark, hcLight]; a value may also name another UI color. */
+type UiDefaults = [string | null, string | null, string | null, string | null];
+
+const UI_THEME_INDEX: Record<string, number> = { "vs-dark": 0, vs: 1, "hc-black": 2, "hc-light": 3 };
+
+export interface Selector {
+  type: string;
+  modifiers: string[];
+  language?: string;
+}
+
+export function parseSelector(selector: string): Selector {
+  const [typeAndModifiers, language] = selector.split(":");
+  const [type, ...modifiers] = typeAndModifiers.split(".");
+  return { type, modifiers, language };
+}
 
 /** Theme settings ID currently in effect, honoring auto-detected light/dark preference. */
 export function activeThemeId(): string | undefined {
@@ -125,24 +168,76 @@ export class TokenRegistry {
   private superTypes = new Map<string, string>();
   private scopes = new Map<string, string[]>(); // key: "type" or "type:language"
 
+  private types = new Set<string>(STANDARD_TYPES);
+  private modifiers = new Set<string>(STANDARD_MODIFIERS);
+  private uiColors = new Map<string, UiDefaults>(Object.entries(UI_COLORS));
+
   constructor() {
     for (const ext of vscode.extensions.all) {
       const c = ext.packageJSON?.contributes;
       for (const t of c?.semanticTokenTypes ?? []) {
+        if (t?.id) this.types.add(t.id);
         if (t?.id && t.superType) {
           this.superTypes.set(t.id, t.superType);
         }
       }
+      for (const m of c?.semanticTokenModifiers ?? []) {
+        if (m?.id) this.modifiers.add(m.id);
+      }
+      for (const col of c?.colors ?? []) {
+        if (typeof col?.id !== "string") continue;
+        const d = col.defaults ?? {};
+        const v = (x: unknown) => (typeof x === "string" ? x : null);
+        this.uiColors.set(col.id, [v(d.dark), v(d.light), v(d.highContrast), v(d.highContrastLight ?? d.light)]);
+      }
       for (const s of c?.semanticTokenScopes ?? []) {
         for (const [key, value] of Object.entries<string[]>(s?.scopes ?? {})) {
-          if (!key.includes(".") && Array.isArray(value)) {
+          if (Array.isArray(value)) {
             // Each entry is a scope stack; the innermost (last) scope decides the color.
             const names = value.map((v) => v.trim().split(/\s+/).pop()!);
             this.scopes.set(s.language ? `${key}:${s.language}` : key, names);
+            this.types.add(key.split(".")[0]);
           }
         }
       }
     }
+  }
+
+  /** A semantic selector is a known token type (or *) followed only by known modifiers. */
+  isSemantic(selector: string): boolean {
+    const { type, modifiers } = parseSelector(selector);
+    return (type === "*" || this.isKnown(type)) && modifiers.every((m) => this.modifiers.has(m));
+  }
+
+  /**
+   * UI colors must be known to VS Code or an installed extension; names without a dot must be
+   * token types or top-level TextMate scopes; anything else is a typo.
+   */
+  isValidName(name: string): boolean {
+    if (isUiColor(name)) return this.uiColors.has(name.slice(UI_PREFIX.length));
+    return this.isSemantic(name) || name.includes(".") || TEXTMATE_ROOTS.has(name);
+  }
+
+  /** Why isValidName rejected a name; modifiers alone are a common slip. */
+  unknownNameMessage(name: string): string {
+    if (isUiColor(name)) return `Unknown UI color '${name.slice(UI_PREFIX.length)}'`;
+    const { type } = parseSelector(name);
+    if (this.modifiers.has(type)) {
+      return `'${type}' is a modifier, not a token type: write *.${type} for every token type, or e.g. variable.${type}`;
+    }
+    return `Unknown token type '${type}'`;
+  }
+
+  /**
+   * The TextMate scopes VS Code falls back to for exactly this selector: never a superType's (a rule
+   * for recordStruct must not recolor every struct), and for :language only language-specific ones.
+   */
+  ownScopes(selector: string): string[] {
+    const { type, modifiers, language } = parseSelector(selector);
+    if (type === "*") return [];
+    const key = [type, ...modifiers].join(".");
+    if (language) return this.scopes.get(`${key}:${language}`) ?? [];
+    return this.scopes.get(key) ?? (modifiers.length ? MODIFIER_SCOPES[key] : STANDARD_SCOPES[type]) ?? [];
   }
 
   /** The type followed by its superTypes, e.g. recordStruct, struct. */
@@ -168,8 +263,16 @@ export class TokenRegistry {
 
   /** All known token types: VS Code's standard ones plus those contributed by extensions. */
   allTypes(): string[] {
-    const keys = [...this.scopes.keys()].map((k) => k.split(":")[0]);
-    return [...new Set([...STANDARD_TYPES, ...this.superTypes.keys(), ...keys])].sort();
+    return [...this.types].sort();
+  }
+
+  /** UI color IDs from VS Code and installed extensions, without the colors. prefix. */
+  allUiColors(): string[] {
+    return [...this.uiColors.keys()].sort();
+  }
+
+  uiColorDefaults(id: string): UiDefaults | undefined {
+    return this.uiColors.get(id);
   }
 
   superTypeOf(type: string): string | undefined {
@@ -177,7 +280,7 @@ export class TokenRegistry {
   }
 
   isKnown(type: string): boolean {
-    return type in STANDARD_SCOPES || this.superTypes.has(type) || [...this.scopes.keys()].some((k) => k.split(":")[0] === type);
+    return this.types.has(type);
   }
 }
 
@@ -198,11 +301,14 @@ export class ThemeResolver {
     return themeFlags(bg ? lightness(bg) < 0.5 : this.theme.dark, this.theme.uiTheme);
   }
 
-  /** The theme's own semantic rule for a token type (or one of its superTypes), if any. */
+  /** The theme's own semantic rule for a selector (or its type's superTypes), if any. */
   semanticRule(ref: string): Resolution | undefined {
-    const [type, language] = ref.split(":");
+    const { type, modifiers, language } = parseSelector(ref);
+    const mods = modifiers.map((m) => `.${m}`).join("");
     for (const t of this.registry.chain(type)) {
-      for (const key of language ? [`${t}:${language}`, t] : [t]) {
+      const keys = mods ? [`${t}${mods}`] : [];
+      keys.push(t);
+      for (const key of language ? keys.flatMap((k) => [`${k}:${language}`, k]) : keys) {
         const v = this.theme.semanticTokenColors[key];
         const fg = typeof v === "string" ? v : (v as { foreground?: string } | undefined)?.foreground;
         if (fg) {
@@ -213,21 +319,68 @@ export class ThemeResolver {
     return undefined;
   }
 
-  /** Resolves "@ref": dotted refs are TextMate scopes, others semantic token types (optionally ":language"). */
+  /**
+   * The theme's color for a name: semantic selectors (type plus known modifiers, optionally
+   * ":language") resolve like VS Code does, anything else is a TextMate scope.
+   */
   resolve(ref: string): Resolution {
-    if (ref.includes(".")) {
-      return this.textMate([ref]) ?? { color: this.foreground, source: "editor foreground (no matching TextMate rule)" };
+    if (isUiColor(ref)) {
+      return this.uiColor(ref.slice(UI_PREFIX.length));
     }
-    const [type, language] = ref.split(":");
-    if (!this.registry.isKnown(type)) {
-      throw new Error(`Unknown token type '${type}'`);
+    if (!this.registry.isValidName(ref)) {
+      throw new Error(this.registry.unknownNameMessage(ref));
+    }
+    if (!this.registry.isSemantic(ref)) {
+      return this.textMate([ref]) ?? { color: this.foreground, source: "editor foreground (no matching TextMate rule)" };
     }
     const semantic = this.semanticRule(ref);
     if (semantic) {
       return semantic;
     }
-    const scopes = this.registry.fallbackScopes(type, language);
+    const { type, language } = parseSelector(ref);
+    const own = this.registry.ownScopes(ref);
+    const scopes = own.length ? own : this.registry.fallbackScopes(type, language);
     return (scopes && this.textMate(scopes)) ?? { color: this.foreground, source: "editor foreground" };
+  }
+
+  /**
+   * The theme's rule for exactly this selector, if any. A parent rule (struct for recordStruct,
+   * variable for variable.readonly) doesn't count: a more specific rule refines it on purpose.
+   */
+  exactSemanticRule(selector: string): Resolution | undefined {
+    const v = this.theme.semanticTokenColors[selector];
+    const fg = typeof v === "string" ? v : (v as { foreground?: string } | undefined)?.foreground;
+    return v !== undefined ? { color: fg ?? "(style only)", source: `semanticTokenColors["${selector}"]` } : undefined;
+  }
+
+  /** A UI color: the theme's own value, else VS Code's (or the contributing extension's) default. */
+  uiColor(id: string, seen = new Set<string>()): Resolution {
+    const own = this.theme.colors[id];
+    if (own !== undefined) return { color: own, source: `colors["${id}"]` };
+    const defaults = this.registry.uiColorDefaults(id);
+    if (!defaults) throw new Error(`Unknown UI color '${id}'`);
+    const value = defaults[UI_THEME_INDEX[this.theme.uiTheme] ?? 0];
+    if (value === null) {
+      throw new Error(`'${id}' isn't set by ${this.theme.id}, and VS Code computes its default from other colors`);
+    }
+    if (value.startsWith("#")) return { color: value, source: "VS Code default" };
+    // Extensions may default to another UI color.
+    if (seen.has(id)) throw new Error(`'${id}' defaults to itself`);
+    seen.add(id);
+    const r = this.uiColor(value, seen);
+    return { color: r.color, source: `default via ${value}: ${r.source}` };
+  }
+
+  /** True when the theme colors this exact scope or a more specific one itself (not just a parent). */
+  hasTextMateRule(scope: string): boolean {
+    return this.theme.tokenColors.some((rule) => {
+      if (!rule.scope || !rule.settings?.foreground) return false;
+      const selectors = Array.isArray(rule.scope) ? rule.scope : rule.scope.split(",");
+      return selectors.some((raw) => {
+        const sel = raw.trim();
+        return sel === scope || sel.startsWith(scope + ".");
+      });
+    });
   }
 
   /** Longest-prefix TextMate match for the first scope that any rule colors. */

@@ -3,15 +3,25 @@
 // Two passes: a check pass evaluates every expression in every match arm (for diagnostics and
 // swatches), and an apply pass walks only the arms that match the active theme to produce rules.
 // Rules skip selectors the theme colors itself, unless they are inside an override block.
+//
+// A semantic selector (struct, variable.readonly) produces a semantic rule plus TextMate rules for
+// the scopes VS Code falls back to, so the color also shows before the language server is ready.
+// Any other name (string.quoted.docstring.python) is a TextMate scope and only produces that.
+// colors.<id> (colors.editorBracketHighlight.foreground1) is a UI color of the theme.
 
 import { Expr, Flag, matchesPattern, Problem, Range, RulesFile, Stmt, Value, VarDecl } from "./cfg";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
-import { ThemeResolver } from "./theme";
+import { isUiColor, ThemeResolver, UI_PREFIX } from "./theme";
 
 export type StyleValue =
   | string
   | { foreground?: string; bold?: boolean; italic?: boolean; underline?: boolean; strikethrough?: boolean };
+
+export interface TextMateSettings {
+  foreground?: string;
+  fontStyle?: string;
+}
 
 export interface ColorSpan {
   range: Range;
@@ -22,6 +32,10 @@ export interface ColorSpan {
 
 export interface CompileResult {
   rules: Record<string, StyleValue>;
+  /** TextMate scope -> settings, for editor.tokenColorCustomizations. */
+  textMate: Record<string, TextMateSettings>;
+  /** UI color ID -> color, for workbench.colorCustomizations. */
+  ui: Record<string, string>;
   log: string[];
   problems: Problem[];
   colors: ColorSpan[];
@@ -31,9 +45,22 @@ export interface CompileResult {
 
 const NONE = Symbol("none");
 
+const FONT_STYLES = ["italic", "bold", "underline", "strikethrough"] as const;
+
+// TextMate has a single fontStyle string, so style flags replace the whole style there.
+function toTextMate(value: StyleValue): TextMateSettings {
+  if (typeof value === "string") return { foreground: value };
+  const settings: TextMateSettings = value.foreground ? { foreground: value.foreground } : {};
+  if (FONT_STYLES.some((f) => value[f] !== undefined)) {
+    settings.fontStyle = FONT_STYLES.filter((f) => value[f]).join(" ");
+  }
+  return settings;
+}
+
 export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult {
   const flags = resolver.flags;
-  const result: CompileResult = { rules: {}, log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
+  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
+  const registry = resolver.registry;
   const failed = new Set<string>();
   const resolving = new Set<string>();
   const themeId = resolver.theme.id;
@@ -123,11 +150,27 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
     else if (v.kind === "expr") checkExpr(v.expr);
   };
 
+  const hasStyle = (v: Value): boolean => v.kind === "style" || (v.kind === "match" && v.arms.some((a) => hasStyle(a.body)));
+
   const check = (stmts: Stmt[]) => {
     for (const st of stmts) {
       if (st.kind === "var") checkVariable(st);
-      else if (st.kind === "rule") checkValue(st.value);
-      else if (st.kind === "override") check(st.body);
+      else if (st.kind === "rule") {
+        if (!registry.isValidName(st.selector)) {
+          const message = registry.unknownNameMessage(st.selector);
+          result.problems.push({
+            range: st.selectorRange,
+            message: message.startsWith("Unknown token type")
+              ? `${message}: this rule has no effect. TextMate scopes contain a dot, e.g. string.quoted`
+              : `${message}; this rule has no effect`,
+            warning: true,
+          });
+        }
+        if (isUiColor(st.selector) && hasStyle(st.value)) {
+          result.problems.push({ range: st.selectorRange, message: "UI colors take a color; style() only applies to tokens" });
+        }
+        checkValue(st.value);
+      } else if (st.kind === "override") check(st.body);
       else st.arms.forEach((a) => check(a.body));
     }
   };
@@ -178,20 +221,50 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         result.log.push(`skip  ${st.selector} (line ${line}): no match arm applies to this theme`);
         continue;
       }
+      if (!registry.isValidName(st.selector)) {
+        result.log.push(`skip  ${st.selector} (line ${line}): unknown token type`);
+        continue;
+      }
+      if (isUiColor(st.selector)) {
+        const id = st.selector.slice(UI_PREFIX.length);
+        if (value === NONE) {
+          delete result.ui[id];
+          result.log.push(`none  ${st.selector} (line ${line})`);
+        } else if (typeof value !== "string") {
+          result.log.push(`error ${st.selector} (line ${line}): UI colors take a color, not style()`);
+        } else if (!override && resolver.theme.colors[id] !== undefined) {
+          result.log.push(`skip  ${st.selector} (line ${line}): theme already defines it (colors["${id}"]); use override to replace it`);
+        } else {
+          result.ui[id] = value;
+          result.log.push(`set   ${st.selector} = ${value}  (line ${line})`);
+        }
+        continue;
+      }
+      const semantic = registry.isSemantic(st.selector);
+      const scopes = semantic ? registry.ownScopes(st.selector) : [st.selector];
       if (value === NONE) {
         delete result.rules[st.selector];
+        scopes.forEach((s) => delete result.textMate[s]);
         result.log.push(`none  ${st.selector} (line ${line})`);
         continue;
       }
-      if (!override) {
-        const own = resolver.semanticRule(st.selector);
+      if (semantic) {
+        const own = override ? undefined : resolver.exactSemanticRule(st.selector);
         if (own) {
-          result.log.push(`skip  ${st.selector} (line ${line}): theme already defines it (${own.source}); use override { } to replace it`);
+          result.log.push(`skip  ${st.selector} (line ${line}): theme already defines it (${own.source}); use override to replace it`);
           continue;
         }
+        result.rules[st.selector] = value;
+        result.log.push(`set   ${st.selector} = ${JSON.stringify(value)}  (line ${line})`);
       }
-      result.rules[st.selector] = value;
-      result.log.push(`set   ${st.selector} = ${JSON.stringify(value)}  (line ${line})`);
+      for (const scope of scopes) {
+        if (!override && resolver.hasTextMateRule(scope)) {
+          result.log.push(`skip  TextMate ${scope} (line ${line}): theme colors this scope itself`);
+          continue;
+        }
+        result.textMate[scope] = toTextMate(value);
+        result.log.push(`set   TextMate ${scope} = ${JSON.stringify(result.textMate[scope])}  (line ${line})`);
+      }
     }
   };
   apply(file.stmts, false);
