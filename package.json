@@ -1,0 +1,96 @@
+{
+  "name": "semantic-theme-extender",
+  "displayName": "Semantic Theme Extender",
+  "description": "Adds colors for structs, interfaces, enums and type parameters to any theme, derived from the theme's own palette. Rules live in a synced, editable rules file.",
+  "version": "0.1.0",
+  "publisher": "Grille",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Grille/VSCode-SemanticThemeExtender.git"
+  },
+  "homepage": "https://github.com/Grille/VSCode-SemanticThemeExtender#readme",
+  "bugs": {
+    "url": "https://github.com/Grille/VSCode-SemanticThemeExtender/issues"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Themes",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "semantic highlighting",
+    "semantic tokens",
+    "struct",
+    "interface",
+    "type parameter",
+    "theme",
+    "visual studio"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onFileSystem:semantic-theme-rules"
+  ],
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "semanticThemeExtender.openRules",
+        "title": "Open Rules",
+        "category": "Semantic Theme Extender"
+      },
+      {
+        "command": "semanticThemeExtender.apply",
+        "title": "Apply Semantic Color Rules",
+        "category": "Semantic Theme Extender"
+      },
+      {
+        "command": "semanticThemeExtender.showResolved",
+        "title": "Show Resolved Theme Colors",
+        "category": "Semantic Theme Extender"
+      },
+      {
+        "command": "semanticThemeExtender.resetRules",
+        "title": "Reset Rules to Defaults",
+        "category": "Semantic Theme Extender"
+      },
+      {
+        "command": "semanticThemeExtender.remove",
+        "title": "Remove Generated Rules",
+        "category": "Semantic Theme Extender"
+      }
+    ],
+    "languages": [
+      {
+        "id": "semantic-theme-rules",
+        "aliases": [
+          "Semantic Theme Rules"
+        ],
+        "extensions": [
+          ".str"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "semantic-theme-rules",
+        "scopeName": "source.semantic-theme-rules",
+        "path": "./syntaxes/semantic-theme-rules.tmLanguage.json"
+      }
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.9.3"
+  }
+}

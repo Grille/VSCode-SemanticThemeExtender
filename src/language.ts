@@ -1,0 +1,355 @@
+// Editor support for .str rules files: diagnostics, color swatches, hover and completion.
+
+import * as vscode from "vscode";
+import { FLAGS, parseRulesFile, Range, STYLE_NAMES } from "./cfg";
+import { Color, toHex } from "./color";
+import { compile, CompileResult } from "./engine";
+import { FUNCTIONS } from "./rules";
+import { ThemeResolver } from "./theme";
+
+export const LANGUAGE_ID = "semantic-theme-rules";
+
+export interface LanguageHost {
+  resolver(): ThemeResolver | undefined;
+}
+
+const STYLES = [...STYLE_NAMES];
+const KEYWORDS = new Set(["match", "style", "override", "_"]);
+
+const FUNCTION_DOCS: Record<string, [string, string]> = {
+  style: ["style(${1:color}, ${2:bold})", "Font styles for the whole value: style(color, bold | !italic). style(underline) keeps the theme's color."],
+  emphasize: ["emphasize(${1:color}, ${2:10%})", "More contrast to the editor background: lighter on dark themes, darker on light ones."],
+  soften: ["soften(${1:color}, ${2:10%})", "Less contrast: toward the editor background."],
+  lighten: ["lighten(${1:color}, ${2:10%})", "Raise lightness (OKLCH) by an absolute amount."],
+  darken: ["darken(${1:color}, ${2:10%})", "Lower lightness (OKLCH) by an absolute amount."],
+  saturate: ["saturate(${1:color}, ${2:20%})", "Scale chroma up by a relative amount."],
+  desaturate: ["desaturate(${1:color}, ${2:20%})", "Scale chroma down by a relative amount."],
+  hue: ["hue(${1:color}, ${2:30})", "Rotate hue by degrees (OKLCH)."],
+  mix: ["mix(${1:a}, ${2:b}, ${3:0.5})", "Blend two colors in OKLab; 0 = a, 1 = b."],
+  alpha: ["alpha(${1:color}, ${2:50%})", "Set opacity."],
+  rgb: ["rgb(${1:r}, ${2:g}, ${3:b})", "Color from 0-255 channels, optional alpha (0-1 or 0-255)."],
+  rgba: ["rgba(${1:r}, ${2:g}, ${3:b}, ${4:a})", "Same as rgb with alpha."],
+};
+
+const BUILTIN_DOCS: Record<string, string> = {
+  theme: 'The active theme\'s name. Use with match: match $theme { "Dark Modern" { ... } }',
+  type: "The active theme's type as flags: dark or light, plus contrast. Use with match: match $type { dark -> ... }",
+  none: "No rule for this selector, e.g. enum = $none",
+};
+
+const toVsColor = (c: Color) => new vscode.Color(c.r, c.g, c.b, c.a);
+const toVsRange = (r: Range) => new vscode.Range(r.start.line, r.start.col, r.end.line, r.end.col);
+
+export function registerLanguage(context: vscode.ExtensionContext, host: LanguageHost): { refresh(): void } {
+  const diagnostics = vscode.languages.createDiagnosticCollection(LANGUAGE_ID);
+  const cache = new WeakMap<vscode.TextDocument, { version: number; result: CompileResult | undefined }>();
+
+  const analyze = (doc: vscode.TextDocument): CompileResult | undefined => {
+    const hit = cache.get(doc);
+    if (hit && hit.version === doc.version) return hit.result;
+    const resolver = host.resolver();
+    const result = resolver && compile(parseRulesFile(doc.getText()), resolver);
+    cache.set(doc, { version: doc.version, result });
+    return result;
+  };
+
+  // Computed colors depend on the theme, but VS Code only re-queries color providers on edits,
+  // so they are drawn as decorations (read-only, no picker) that can be refreshed at any time.
+  const computedSwatch = vscode.window.createTextEditorDecorationType({
+    before: {
+      contentText: " ",
+      width: "0.8em",
+      height: "0.8em",
+      margin: "0.1em 0.2em 0 0.2em",
+      border: "1px solid",
+      borderColor: new vscode.ThemeColor("editorWidget.border"),
+      textDecoration: "none; display: inline-block; vertical-align: middle; box-sizing: border-box",
+    },
+  });
+
+  const decorate = (editor: vscode.TextEditor) => {
+    if (editor.document.languageId !== LANGUAGE_ID) return;
+    const result = analyze(editor.document);
+    const themeId = host.resolver()?.theme.id ?? "the active theme";
+    editor.setDecorations(
+      computedSwatch,
+      (result?.colors ?? [])
+        .filter((c) => !c.literal)
+        .map((c) => ({
+          range: toVsRange(c.range),
+          hoverMessage: new vscode.MarkdownString(`\`${toHex(c.color)}\` in *${themeId}*`),
+          renderOptions: { before: { backgroundColor: toHex(c.color) } },
+        })),
+    );
+  };
+
+  const validate = (doc: vscode.TextDocument) => {
+    if (doc.languageId !== LANGUAGE_ID) return;
+    vscode.window.visibleTextEditors.filter((e) => e.document === doc).forEach(decorate);
+    const result = analyze(doc);
+    diagnostics.set(
+      doc.uri,
+      (result?.problems ?? []).map((p) => {
+        const d = new vscode.Diagnostic(
+          toVsRange(p.range),
+          p.message,
+          p.warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
+        );
+        d.source = LANGUAGE_ID;
+        return d;
+      }),
+    );
+  };
+
+  const selector: vscode.DocumentSelector = { language: LANGUAGE_ID };
+
+  const tokenTypeItems = (resolver: ThemeResolver | undefined, kind: vscode.CompletionItemKind) =>
+    (resolver?.registry.allTypes() ?? []).map((t) => {
+      const item = new vscode.CompletionItem(t, kind);
+      try {
+        const r = resolver!.resolve(t);
+        item.detail = r.color;
+        item.documentation = `${r.source} in ${resolver!.theme.id}`;
+      } catch {
+        // unknown in this theme
+      }
+      const sup = resolver?.registry.superTypeOf(t);
+      if (sup) item.detail = `${item.detail ?? ""}  (extends ${sup})`.trim();
+      return item;
+    });
+
+  const snippet = (label: string, body: string, kind: vscode.CompletionItemKind, docs?: string) => {
+    const item = new vscode.CompletionItem(label, kind);
+    item.insertText = new vscode.SnippetString(body);
+    item.documentation = docs;
+    return item;
+  };
+
+  const matchSnippet = (asValue: boolean) =>
+    snippet(
+      "match",
+      asValue ? "match \\$${1|type,theme|} {\n\t${2:dark} -> $3\n\t_ -> $4\n}" : "match \\$${1|type,theme|} {\n\t${2:dark} {\n\t\t$3\n\t}\n}",
+      vscode.CompletionItemKind.Keyword,
+      asValue ? "Choose a value by theme type or name" : "Rules for matching themes",
+    );
+
+  context.subscriptions.push(
+    diagnostics,
+    computedSwatch,
+    vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach(decorate)),
+    vscode.workspace.onDidOpenTextDocument(validate),
+    vscode.workspace.onDidChangeTextDocument((e) => validate(e.document)),
+    vscode.workspace.onDidCloseTextDocument((d) => diagnostics.delete(d.uri)),
+
+    vscode.languages.registerColorProvider(selector, {
+      provideDocumentColors(doc) {
+        // Only literal hex colors get the editable built-in swatch; computed ones are decorations.
+        return (analyze(doc)?.colors ?? [])
+          .filter((c) => c.literal)
+          .map((c) => new vscode.ColorInformation(toVsRange(c.range), toVsColor(c.color)));
+      },
+      provideColorPresentations(color, { range }) {
+        const hex = toHex({ r: color.red, g: color.green, b: color.blue, a: color.alpha });
+        const p = new vscode.ColorPresentation(hex);
+        p.textEdit = vscode.TextEdit.replace(range, hex);
+        return [p];
+      },
+    }),
+
+    vscode.languages.registerHoverProvider(selector, {
+      provideHover(doc, pos) {
+        const range = doc.getWordRangeAtPosition(pos, /\$?[A-Za-z_*][\w.:-]*/);
+        if (!range) return undefined;
+        const line = doc.lineAt(pos.line).text;
+        const commentAt = line.indexOf(";");
+        if (commentAt >= 0 && commentAt < range.start.character) return undefined;
+        const word = doc.getText(range);
+        const after = line.slice(range.end.character);
+        const resolver = host.resolver();
+        const result = analyze(doc);
+        const md = new vscode.MarkdownString();
+
+        if (word.startsWith("$")) {
+          const name = word.slice(1);
+          if (name in BUILTIN_DOCS) {
+            md.appendMarkdown(`**${word}**: ${BUILTIN_DOCS[name]}`);
+            if (name === "theme" && resolver) md.appendMarkdown(`\n\nNow: \`"${resolver.theme.id}"\``);
+            if (name === "type" && result) md.appendMarkdown(`\n\nNow: \`${[...result.flags].join(" & ")}\``);
+          } else {
+            const c = result?.variables.get(name);
+            md.appendMarkdown(c ? `**${word}** = \`${toHex(c)}\`` : `**${word}** is undefined or has an error`);
+          }
+          return new vscode.Hover(md, range);
+        }
+
+        if ((FLAGS as string[]).includes(word) && result && !/^\s*=/.test(after)) {
+          const has = result.flags.has(word as never);
+          md.appendMarkdown(`**${word}**: the active theme ${has ? "is" : "is not"} ${word === "contrast" ? "high contrast" : word} (\`${[...result.flags].join(" & ")}\`)`);
+          return new vscode.Hover(md, range);
+        }
+
+        const isSelector = /^\s*=/.test(after);
+        if (!isSelector && (word in FUNCTIONS || STYLE_NAMES.has(word) || KEYWORDS.has(word))) return undefined;
+        if (!resolver) return undefined;
+        try {
+          const r = resolver.resolve(word);
+          md.appendMarkdown(`**${word}** in *${resolver.theme.id}*: \`${r.color}\` from ${r.source}`);
+        } catch (e) {
+          md.appendMarkdown((e as Error).message);
+        }
+        if (isSelector) {
+          const generated = result?.rules[word];
+          md.appendMarkdown(generated === undefined ? "\n\nNo rule generated for this theme." : `\n\nGenerated: \`${JSON.stringify(generated)}\``);
+        }
+        return new vscode.Hover(md, range);
+      },
+    }),
+
+    vscode.languages.registerCompletionItemProvider(
+      selector,
+      {
+        provideCompletionItems(doc, pos) {
+          const resolver = host.resolver();
+          const where = cursorContext(doc.getText(new vscode.Range(0, 0, pos.line, pos.character)));
+          if (where.kind === "none") return undefined;
+
+          if (where.kind === "variable") {
+            const vars = analyze(doc)?.variables ?? new Map<string, Color>();
+            const items = [...vars].map(([name, c]) => {
+              const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Variable);
+              item.detail = toHex(c);
+              return item;
+            });
+            for (const [name, docs] of Object.entries(BUILTIN_DOCS)) {
+              const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Constant);
+              item.documentation = docs;
+              items.push(item);
+            }
+            return items.map((item) => {
+              item.range = new vscode.Range(pos.line, pos.character - where.typed.length, pos.line, pos.character);
+              return item;
+            });
+          }
+
+          if (where.kind === "pattern") {
+            if (where.subject === "type") {
+              return [...FLAGS, "_"].map((f) => new vscode.CompletionItem(f, vscode.CompletionItemKind.EnumMember));
+            }
+            const ids = new Set<string>();
+            for (const ext of vscode.extensions.all) {
+              for (const t of ext.packageJSON?.contributes?.themes ?? []) {
+                const id = t.id ?? t.label;
+                if (typeof id === "string" && !id.startsWith("%")) ids.add(id);
+              }
+            }
+            return [...ids].map((id) => {
+              const item = new vscode.CompletionItem(`"${id}"`, vscode.CompletionItemKind.Value);
+              item.filterText = id;
+              return item;
+            });
+          }
+
+          if (where.kind === "selector") {
+            return [
+              ...tokenTypeItems(resolver, vscode.CompletionItemKind.Property),
+              matchSnippet(false),
+              snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
+            ];
+          }
+
+          // value
+          const styleItems = () => STYLES.map((s) => new vscode.CompletionItem(s, vscode.CompletionItemKind.EnumMember));
+          const arg = styleArgument(where.value);
+          if (arg === "flags") return styleItems();
+          const functions = ["style", ...Object.keys(FUNCTIONS)]
+            .filter((name) => !(name === "style" && arg !== "top"))
+            .map((name) => {
+              const [body, docs] = FUNCTION_DOCS[name] ?? [`${name}($1)`, ""];
+              return snippet(name, body, vscode.CompletionItemKind.Function, docs);
+            });
+          const items = [...functions, ...tokenTypeItems(resolver, vscode.CompletionItemKind.Color), matchSnippet(true)];
+          return arg === "first" ? [...styleItems(), ...items] : items;
+        },
+      },
+      "$",
+      "(",
+      ",",
+      "|",
+      "&",
+      "!",
+    ),
+  );
+
+  vscode.workspace.textDocuments.forEach(validate);
+
+  return {
+    /** Re-validates open documents, e.g. after a theme change. */
+    refresh() {
+      for (const doc of vscode.workspace.textDocuments) {
+        cache.delete(doc);
+        validate(doc);
+      }
+    },
+  };
+}
+
+type CursorContext =
+  | { kind: "none" }
+  | { kind: "variable"; typed: string }
+  | { kind: "pattern"; subject: string }
+  | { kind: "selector" }
+  | { kind: "value"; value: string };
+
+/** Works out what may be typed at the end of `before` (the document text up to the cursor). */
+function cursorContext(before: string): CursorContext {
+  // Strip comments and strings so braces and operators inside them don't count.
+  const lines = before.split(/\r?\n/).map((l) => l.replace(/;.*$/, "").replace(/"[^"]*"/g, '""'));
+  const current = before.split(/\r?\n/).pop()!;
+  if (current.includes(";") || /"[^"]*$/.test(current.replace(/"[^"]*"/g, ""))) return { kind: "none" };
+  const text = lines.join("\n");
+
+  // Innermost open brace: a match (arms are patterns) or an arm body (statements).
+  const stack: ({ kind: "match"; subject: string } | { kind: "arm" })[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      const m = /match\s+\$(\w+)\s*$/.exec(text.slice(0, i));
+      stack.push(m ? { kind: "match", subject: m[1] } : { kind: "arm" });
+    } else if (text[i] === "}") {
+      stack.pop();
+    }
+  }
+
+  const v = /\$([\w-]*)$/.exec(current);
+  if (v) return { kind: "variable", typed: v[1] };
+
+  const line = lines[lines.length - 1];
+  const top = stack[stack.length - 1];
+  if (top?.kind === "match") {
+    const arrow = line.lastIndexOf("->");
+    if (arrow >= 0) return { kind: "value", value: line.slice(arrow + 2) };
+    return { kind: "pattern", subject: top.subject };
+  }
+  const eq = /=/.exec(line);
+  if (eq) return { kind: "value", value: line.slice(eq.index + eq[0].length) };
+  return { kind: "selector" };
+}
+
+/**
+ * Where the cursor sits relative to style(): "flags" after its comma or a "|", "first" in its
+ * first argument (a color or flags), "nested" inside another call, "top" at the start of the value.
+ */
+function styleArgument(value: string): "top" | "first" | "flags" | "nested" {
+  const stack: { fn: string; commas: number }[] = [];
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i];
+    if (c === "(") stack.push({ fn: /(\w+)\s*$/.exec(value.slice(0, i))?.[1] ?? "", commas: 0 });
+    else if (c === ")") stack.pop();
+    else if (c === "," && stack.length) stack[stack.length - 1].commas++;
+  }
+  if (!stack.length) return "top";
+  const top = stack[stack.length - 1];
+  if (stack.length === 1 && top.fn === "style") {
+    return top.commas > 0 || /\|\s*!?\w*$/.test(value) ? "flags" : "first";
+  }
+  return "nested";
+}

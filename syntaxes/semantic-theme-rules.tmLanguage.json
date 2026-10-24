@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Semantic Theme Rules",
+  "scopeName": "source.semantic-theme-rules",
+  "patterns": [
+    { "match": ";.*$", "name": "comment.line.semicolon.semantic-theme-rules" },
+    { "match": "\"[^\"]*\"?", "name": "string.quoted.double.semantic-theme-rules" },
+    {
+      "match": "\\b(match)\\s+(\\$[\\w-]+)",
+      "captures": {
+        "1": { "name": "keyword.control.match.semantic-theme-rules" },
+        "2": { "name": "variable.language.builtin.semantic-theme-rules" }
+      }
+    },
+    { "match": "\\boverride(?!\\s*=)(?=\\s*[{A-Za-z_*$])", "name": "keyword.control.override.semantic-theme-rules" },
+    {
+      "match": "(\\$[\\w-]+)\\s*(=)(?!=)",
+      "captures": {
+        "1": { "name": "variable.other.definition.semantic-theme-rules" },
+        "2": { "name": "keyword.operator.assignment.semantic-theme-rules" }
+      }
+    },
+    {
+      "match": "((?:\\*(?=\\.)|[A-Za-z_])(?:[\\w.:]|-(?=\\w))*)\\s*(=)",
+      "captures": {
+        "1": { "name": "entity.name.tag.selector.semantic-theme-rules" },
+        "2": { "name": "keyword.operator.assignment.semantic-theme-rules" }
+      }
+    },
+    { "match": "\\$(theme|type|none)\\b", "name": "variable.language.builtin.semantic-theme-rules" },
+    { "match": "\\$[\\w-]+", "name": "variable.other.semantic-theme-rules" },
+    { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.other.color.semantic-theme-rules" },
+    { "match": "->", "name": "keyword.operator.arrow.semantic-theme-rules" },
+    { "match": "[&|!]", "name": "keyword.operator.logical.semantic-theme-rules" },
+    { "match": "\\b(dark|light|contrast)\\b(?!\\s*(?:=|\\())", "name": "constant.language.flag.semantic-theme-rules" },
+    { "match": "\\b_\\b", "name": "constant.language.wildcard.semantic-theme-rules" },
+    { "match": "\\b(bold|italic|underline|strikethrough)\\b(?!\\s*\\()", "name": "storage.modifier.style.semantic-theme-rules" },
+    { "match": "\\b(style|emphasize|soften|lighten|darken|saturate|desaturate|hue|mix|alpha|rgba?)(?=\\s*\\()", "name": "support.function.semantic-theme-rules" },
+    { "match": "[+-]?\\d*\\.?\\d+%?", "name": "constant.numeric.semantic-theme-rules" },
+    { "match": "\\b[A-Za-z_](?:[\\w.:]|-(?=\\w))*", "name": "variable.language.theme-ref.semantic-theme-rules" },
+    { "match": "[{}()]", "name": "punctuation.section.semantic-theme-rules" },
+    { "match": ",", "name": "punctuation.separator.semantic-theme-rules" }
+  ]
+}
