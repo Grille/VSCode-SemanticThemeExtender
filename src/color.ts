@@ -104,6 +104,25 @@ export const desaturate = (c: Color, amount: number) => saturate(c, -amount);
 export const rotateHue = (c: Color, degrees: number) => adjustLch(c, (x) => ({ ...x, h: x.h + degrees }));
 export const withAlpha = (c: Color, alpha: number): Color => ({ ...c, a: Math.min(1, Math.max(0, alpha)) });
 
+/**
+ * The hue rotation (degrees) that moves a color of chroma C by a visible distance: the chord
+ * 2·C·sin(Δh/2) in OKLab. The same angle moves muted colors much less than saturated ones.
+ * Capped at 180° when the color is too muted to move that far by hue alone.
+ */
+function angleFor(distance: number, C: number): { degrees: number; capped: boolean } {
+  const s = Math.abs(distance) / (2 * C);
+  const degrees = (2 * Math.asin(Math.min(1, s)) * 180) / Math.PI;
+  return { degrees: Math.sign(distance) * degrees, capped: s > 1 };
+}
+
+/** Shifts the hue by a visible distance instead of an angle; capped when the color is too muted. */
+export function shiftHue(c: Color, distance: number): { color: Color; capped: boolean } {
+  const lch = toLch(rgbToLab(c));
+  if (lch.C < 1e-4) return { color: c, capped: distance !== 0 };
+  const { degrees, capped } = angleFor(distance, lch.C);
+  return { color: lchToRgb({ ...lch, h: lch.h + degrees }, c.a), capped };
+}
+
 /** Below this chroma a color is close to gray: its hue is meaningless and ratios explode. */
 const NEAR_GRAY = 0.02;
 
@@ -115,8 +134,10 @@ export interface Offset {
   /** Chroma ratio, or an absolute change (ratio undefined) when the base is near gray. */
   ratio?: number;
   dC: number;
-  /** Hue rotation in degrees, 0 when base or target is near gray. */
+  /** Hue rotation in degrees, 0 when base or target is near gray; for display, and for near-gray colors. */
   dh: number;
+  /** Visible size of the hue change (signed OKLab chord at the base's and target's chroma). */
+  dH: number;
   dA: number;
 }
 
@@ -127,12 +148,14 @@ export function measureOffset(base: Color, target: Color): Offset {
   const gray = b.C < NEAR_GRAY || t.C < NEAR_GRAY;
   const dL = t.L - b.L;
   const room = dL >= 0 ? 1 - b.L : b.L;
+  const dh = gray ? 0 : ((((t.h - b.h) % 360) + 540) % 360) - 180;
   return {
     fL: room > 1e-6 ? dL / room : 0,
     dL,
     ratio: b.C < NEAR_GRAY ? undefined : t.C / b.C,
     dC: t.C - b.C,
-    dh: gray ? 0 : ((((t.h - b.h) % 360) + 540) % 360) - 180,
+    dh,
+    dH: 2 * Math.sqrt(b.C * t.C) * Math.sin((dh * Math.PI) / 360),
     dA: target.a - base.a,
   };
 }
@@ -140,16 +163,21 @@ export function measureOffset(base: Color, target: Color): Offset {
 /**
  * Applies the change from base to target to c; invertLightness flips the lightness direction.
  * Lightness moves the same fraction of the remaining room, so a light color can't overshoot white.
+ * The hue moves by the same visible distance as from base to target, not the same angle, so a
+ * muted theme color changes as noticeably as a saturated one; exact where c equals base.
  */
 export function applyOffset(c: Color, o: Offset, invertLightness = false): Color {
-  return adjustLch(withAlpha(c, c.a + o.dA), (x) => ({
-    L: (() => {
-      const up = (o.fL >= 0) !== invertLightness;
-      return up ? x.L + Math.abs(o.fL) * (1 - x.L) : x.L - Math.abs(o.fL) * x.L;
-    })(),
-    C: Math.max(0, o.ratio === undefined ? x.C + o.dC : x.C * o.ratio),
-    h: x.h + o.dh,
-  }));
+  return adjustLch(withAlpha(c, c.a + o.dA), (x) => {
+    const up = (o.fL >= 0) !== invertLightness;
+    const C = Math.max(0, o.ratio === undefined ? x.C + o.dC : x.C * o.ratio);
+    // The chroma the hue change is measured at: between before and after, like in measureOffset.
+    const mean = Math.sqrt(x.C * C);
+    return {
+      L: up ? x.L + Math.abs(o.fL) * (1 - x.L) : x.L - Math.abs(o.fL) * x.L,
+      C,
+      h: x.h + (mean < NEAR_GRAY ? o.dh : angleFor(o.dH, mean).degrees),
+    };
+  });
 }
 
 export function mix(a: Color, b: Color, t: number): Color {

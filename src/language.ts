@@ -30,7 +30,7 @@ const FUNCTION_DOCS: Record<string, [string, string]> = {
     "offset(${1:class}, ${2:#4EC9B0}, ${3:#86C691}, ${4|light,dark|})",
     "Apply the change from base to target to the color: lightness, chroma and hue as measured. Exact where the color equals base. Where the optional condition holds (light, light & !contrast, ...) the lightness change flips; pass light for references measured on a dark theme.",
   ],
-  hue: ["hue(${1:color}, ${2:30})", "Rotate hue by degrees (OKLCH): hue(c, 30), 30deg or 30° also work."],
+  hue: ["hue(${1:color}, ${2:30})", "Rotate the hue (OKLCH): by an angle, hue(c, 30) / 30deg / 30°, or by a visible distance, hue(c, 5%), which looks the same on muted and saturated colors."],
   mix: ["mix(${1:a}, ${2:b}, ${3:0.5})", "Blend two colors in OKLab; 0 = a, 1 = b."],
   alpha: ["alpha(${1:color}, ${2:50%})", "Set opacity."],
   rgb: ["rgb(${1:r}, ${2:g}, ${3:b})", "Integers are 0-255 (rgb(0, 100, 200)), decimals 0.0-1.0 (rgb(0.5, 1.0, 0.2)), or percentages. Optional alpha: 0.5, 50% or 0-255."],

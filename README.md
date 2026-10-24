@@ -70,17 +70,17 @@ override ui {
 | `editor.background` (as a value) | The active theme's UI color, or VS Code's default where the theme doesn't set it |
 | `$name = color` | Variable: top level only, assigned once |
 | `#86C691`, `rgb(134, 198, 145)` | A literal color. `rgb` takes integers 0-255, decimals 0.0-1.0 (`rgb(0.5, 1.0, 0.2)`) or percentages, plus an optional alpha |
-| `offset(c, base, target, light)` | Apply the change from `base` to `target` to `c`: lightness (as a share of the room toward white or black), chroma ratio, hue rotation. Exact where `c` equals `base`. Where the optional condition holds (`light`, `light & !contrast`, ...), the lightness direction flips: for references measured on a dark theme, pass `light` |
+| `offset(c, base, target, light)` | Apply the change from `base` to `target` to `c`: lightness (as a share of the room toward white or black), chroma ratio, and a hue shift of the same visible size (so a muted color shifts by a larger angle). Exact where `c` equals `base`. Where the optional condition holds (`light`, `light & !contrast`, ...), the lightness direction flips: for references measured on a dark theme, pass `light` |
 | `emphasize(c, 10%)`, `soften(c, 10%)` | More / less contrast to the editor background: lighter on dark themes, darker on light ones |
 | `lighten(c, 10%)`, `darken` | Change lightness (OKLCH, 0-1) by an absolute amount: 10% adds or subtracts 0.1 |
 | `saturate(c, 20%)`, `desaturate` | Scale chroma relatively: 20% means x 1.2 or x 0.8 |
-| `hue(c, 30)` | Rotate the hue by degrees; `30deg` and `30°` also work |
+| `hue(c, 30)`, `hue(c, 5%)` | Rotate the hue: by degrees (`30deg` and `30°` also work), or by a visible distance. The same angle changes muted colors much less than saturated ones; a percentage looks equally different on any color |
 | `mix(a, b, 0.5)`, `alpha(c, 50%)` | Blend two colors, set opacity |
 | `style(c, bold \| !italic)` | Font styles; `style(underline)` keeps the theme's color |
 | `$none` | No rule for this selector |
 
 Numbers keep their unit: `10%` is the same as `0.1` wherever an amount is expected, and a
-unit that doesn't fit (`hue(c, 30%)`, `lighten(c, 10deg)`) is an error.
+unit that doesn't fit (`lighten(c, 10deg)`, `alpha(c, 30deg)`) is an error.
 
 ### Matching themes
 

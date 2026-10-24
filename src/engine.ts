@@ -64,6 +64,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
   const registry = resolver.registry;
   const failed = new Set<string>();
   const resolving = new Set<string>();
+  const warned = new Set<string>();
   const themeId = resolver.theme.id;
 
   const ctx: EvalContext = {
@@ -100,6 +101,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
       const c = parseHex(r.color);
       if (!c) throw new EvalError(`Theme color for '${name}' is not a hex color: ${r.color}`, range);
       return c;
+    },
+    warn(message, range) {
+      // Values are evaluated more than once (check and apply pass); report each spot once.
+      const key = `${range.start.line}:${range.start.col}:${message}`;
+      if (warned.has(key)) return;
+      warned.add(key);
+      result.problems.push({ range, message, warning: true });
     },
     background() {
       return parseHex(resolver.background) ?? parseHex(resolver.theme.dark ? "#1E1E1E" : "#FFFFFF")!;

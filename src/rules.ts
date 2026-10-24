@@ -9,6 +9,8 @@ export interface EvalContext {
   ref(name: string, range: Range, target?: NameKind): Color;
   /** The theme's editor background, for contrast-aware functions. */
   background(): Color;
+  /** Reports something questionable that still produced a color. */
+  warn(message: string, range: Range): void;
   flags: Set<Flag>;
   themeId: string;
 }
@@ -34,10 +36,14 @@ const emphasize = (ctx: EvalContext, c: Color, amount = 0.1) =>
 // Argument kinds; numbers keep their unit until they reach a function, which checks and converts:
 //   amount   10% or 0.1                   (percent converts to a factor)
 //   angle    30, 30deg or 30°             (degrees; % is an error)
+//   hue      30, 30deg, 30° (an angle) or 5% (a visible distance, the same for every color)
 //   channel  0-255, 0.0-1.0 or 0%-100%    (integers vs decimals decide the scale)
 //   alpha    0.5, 50%, or 0-255
 //   condition  a $type pattern like light or light & !contrast, true for the active theme
-type ArgKind = "color" | "amount" | "angle" | "channel" | "alpha" | "condition";
+type ArgKind = "color" | "amount" | "angle" | "hue" | "channel" | "alpha" | "condition";
+
+/** A hue argument: an angle, or a visible distance that becomes an angle per color. */
+type HueShift = { degrees: number } | { distance: number };
 
 interface Num {
   num: number;
@@ -51,6 +57,7 @@ const KIND_TEXT: Record<ArgKind, string> = {
   color: "a color",
   amount: "an amount like 10% or 0.1",
   angle: "an angle in degrees like 30",
+  hue: "an angle like 30° or a visible distance like 5%",
   channel: "a channel value: 0-255, 0.0-1.0 or a percentage",
   alpha: "an opacity like 0.5 or 50%",
   condition: "a condition like light or light & !contrast",
@@ -58,6 +65,14 @@ const KIND_TEXT: Record<ArgKind, string> = {
 
 // The change from base to target, applied to c; where the condition holds the lightness change is
 // flipped, e.g. light for references measured on a dark theme, so contrast moves the same way.
+// Contextual functions get the evaluation context and the call's range before their arguments.
+const hue = (ctx: EvalContext, range: Range, c: Color, shift: HueShift) => {
+  if ("degrees" in shift) return color.rotateHue(c, shift.degrees);
+  const r = color.shiftHue(c, shift.distance);
+  if (r.capped) ctx.warn("This color is too muted to shift its hue that far; rotated by 180° instead", range);
+  return r.color;
+};
+
 const offset = (c: Color, base: Color, target: Color, flipLightness = false) =>
   color.applyOffset(c, color.measureOffset(base, target), flipLightness);
 
@@ -65,14 +80,14 @@ export const FUNCTIONS: Record<
   string,
   { sig: ArgKind[]; optional?: number; fn: (...a: any[]) => Color; contextual?: boolean }
 > = {
-  emphasize: { sig: ["color", "amount"], optional: 1, contextual: true, fn: emphasize },
-  soften: { sig: ["color", "amount"], optional: 1, contextual: true, fn: (ctx, c, amount = 0.1) => emphasize(ctx, c, -amount) },
+  emphasize: { sig: ["color", "amount"], optional: 1, contextual: true, fn: (ctx, _range, c, amount) => emphasize(ctx, c, amount) },
+  soften: { sig: ["color", "amount"], optional: 1, contextual: true, fn: (ctx, _range, c, amount = 0.1) => emphasize(ctx, c, -amount) },
   rgb: { sig: ["channel", "channel", "channel", "alpha"], optional: 1, fn: (r, g, b, a = 1) => ({ r, g, b, a }) },
   lighten: { sig: ["color", "amount"], fn: color.lighten },
   darken: { sig: ["color", "amount"], fn: color.darken },
   saturate: { sig: ["color", "amount"], fn: color.saturate },
   desaturate: { sig: ["color", "amount"], fn: color.desaturate },
-  hue: { sig: ["color", "angle"], fn: color.rotateHue },
+  hue: { sig: ["color", "hue"], contextual: true, fn: hue },
   offset: { sig: ["color", "color", "color", "condition"], optional: 1, fn: offset },
   alpha: { sig: ["color", "alpha"], fn: color.withAlpha },
   mix: { sig: ["color", "color", "amount"], optional: 1, fn: (a, b, t = 0.5) => color.mix(a, b, t) },
@@ -80,7 +95,7 @@ export const FUNCTIONS: Record<
 FUNCTIONS.rgba = FUNCTIONS.rgb;
 
 /** Converts a number argument to what the function expects, or explains why it doesn't fit. */
-function convert(n: Num, kind: ArgKind, fn: string, range: Range): number {
+function convert(n: Num, kind: ArgKind, fn: string, range: Range): number | HueShift {
   const wrong = (why: string) => new EvalError(`${fn}() expects ${KIND_TEXT[kind]}${why}`, range);
   switch (kind) {
     case "amount":
@@ -89,6 +104,8 @@ function convert(n: Num, kind: ArgKind, fn: string, range: Range): number {
     case "angle":
       if (n.unit === "percent") throw wrong(", not a percentage");
       return n.num;
+    case "hue":
+      return n.unit === "percent" ? { distance: n.num / 100 } : { degrees: n.num };
     case "alpha":
       if (n.unit === "deg") throw wrong(", not an angle");
       if (n.unit === "percent") return n.num / 100;
@@ -162,7 +179,7 @@ function evalArg(e: Expr, ctx: EvalContext): Color | Num {
         }
         return convert(v, kind, e.fn, range);
       });
-      return f.contextual ? f.fn(ctx, ...args) : f.fn(...args);
+      return f.contextual ? f.fn(ctx, e.range, ...args) : f.fn(...args);
     }
   }
 }

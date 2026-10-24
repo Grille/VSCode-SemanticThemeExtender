@@ -10,6 +10,7 @@
 - `dark` / `light` are decided once from the editor background, the same for `match $type` and every contrast-aware function.
 - TextMate scopes as selectors; semantic rules also set their TextMate fallback scope.
 - UI colors by their ID, read and written, e.g. bracket pair colors derived from the theme.
+- `hue(c, 5%)` shifts the hue by a visible distance, the same on muted and saturated colors; `offset` carries hue changes over the same way.
 - `ui`, `semantic` and `textmate` say what kind of name a rule or value uses, for one rule or a block.
 - Settings only hold a section for the active theme; "already colored" means an exact theme rule.
 - Synced rules editor with diagnostics, color swatches, hover and completion.
