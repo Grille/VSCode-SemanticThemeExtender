@@ -45,9 +45,16 @@ match $theme {
 }
 
 ; UI colors: bracket pair colors that follow the theme's own palette
-colors.editorBracketHighlight.foreground1 = soften(keyword, 15%)
-colors.editorBracketHighlight.foreground2 = soften(function, 15%)
-colors.editorBracketHighlight.foreground3 = soften(type, 15%)
+editorBracketHighlight.foreground1 = soften(keyword, 15%)
+editorBracketHighlight.foreground2 = soften(function, 15%)
+editorBracketHighlight.foreground3 = soften(type, 15%)
+
+; say the kind explicitly where it matters
+textmate comment = #6A9955          ; only the TextMate scope 'comment'
+semantic struct  = #86C691          ; only the semantic rule, no TextMate fallback
+override ui {
+  editor.background = darken(ui editor.background, 5%)
+}
 ```
 
 | Syntax | Meaning |
@@ -56,10 +63,11 @@ colors.editorBracketHighlight.foreground3 = soften(type, 15%)
 | `override selector = value`, `override { rules }` | Rules that also replace the theme's own colors |
 | `struct`, `parameter:python`, `*.static` | Semantic selector: a token type, optionally with known modifiers or a language. Also sets the TextMate scope VS Code falls back to (`struct` → `entity.name.type.struct`), so the color shows before the language server is ready |
 | `string.quoted.docstring.python` | TextMate scope: any other name with a dot. Sets only the TextMate color |
-| `colors.editorBracketHighlight.foreground1` | UI color: `colors.` plus any color ID VS Code or an installed extension knows. Takes a color, not `style()` |
+| `editorBracketHighlight.foreground1` | UI color: any color ID VS Code or an installed extension knows. Takes a color, not `style()` |
+| `ui name`, `semantic name`, `textmate name`, `ui { rules }` | Say what kind of name it is instead of inferring it (token type, then UI color ID, then TextMate scope). The name must fit the kind. `semantic` writes only the semantic rule, without the TextMate fallback; `textmate` takes the name literally as a scope. Combines with `override`, also in values: `ui editor.background` |
 | `class`, `function` (as a value) | The active theme's color for that semantic selector |
 | `variable.language` (as a value) | The active theme's color for that TextMate scope |
-| `colors.editor.background` (as a value) | The active theme's UI color, or VS Code's default where the theme doesn't set it |
+| `editor.background` (as a value) | The active theme's UI color, or VS Code's default where the theme doesn't set it |
 | `$name = color` | Variable: top level only, assigned once |
 | `#86C691`, `rgb(134, 198, 145)` | A literal color. `rgb` takes integers 0-255, decimals 0.0-1.0 (`rgb(0.5, 1.0, 0.2)`) or percentages, plus an optional alpha |
 | `offset(c, base, target, light)` | Apply the change from `base` to `target` to `c`: lightness (as a share of the room toward white or black), chroma ratio, hue rotation. Exact where `c` equals `base`. Where the optional condition holds (`light`, `light & !contrast`, ...), the lightness direction flips: for references measured on a dark theme, pass `light` |

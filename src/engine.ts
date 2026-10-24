@@ -6,13 +6,14 @@
 //
 // A semantic selector (struct, variable.readonly) produces a semantic rule plus TextMate rules for
 // the scopes VS Code falls back to, so the color also shows before the language server is ready.
-// Any other name (string.quoted.docstring.python) is a TextMate scope and only produces that.
-// colors.<id> (colors.editorBracketHighlight.foreground1) is a UI color of the theme.
+// A UI color ID (editorBracketHighlight.foreground1) sets that color of the theme. Any other name
+// (string.quoted.docstring.python) is a TextMate scope and only produces that. ui / semantic /
+// textmate say the kind explicitly; an explicit semantic rule leaves the TextMate fallback alone.
 
 import { Expr, Flag, matchesPattern, Problem, Range, RulesFile, Stmt, Value, VarDecl } from "./cfg";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
-import { isUiColor, ThemeResolver, UI_PREFIX } from "./theme";
+import { ThemeResolver } from "./theme";
 
 export type StyleValue =
   | string
@@ -89,10 +90,10 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         resolving.delete(name);
       }
     },
-    ref(name, range) {
+    ref(name, range, target) {
       let r;
       try {
-        r = resolver.resolve(name);
+        r = resolver.resolve(name, target);
       } catch (e) {
         throw new EvalError((e as Error).message, range);
       }
@@ -126,6 +127,23 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
     } catch (err) {
       report(err);
       return undefined;
+    } finally {
+      argSwatches(e);
+    }
+  };
+
+  // Swatches for color arguments too, e.g. keyword in soften(keyword, 15%). Their errors were
+  // already reported with the whole expression.
+  const argSwatches = (e: Expr) => {
+    if (e.kind !== "call") return;
+    for (const a of e.args) {
+      if (a.kind === "num" || a.kind === "condition" || a.kind === "match") continue;
+      try {
+        result.colors.push({ range: a.range, color: evaluateColor(a, ctx), literal: a.kind === "color" });
+      } catch (err) {
+        if (!(err instanceof EvalError) && !(err instanceof NoMatch)) throw err;
+      }
+      argSwatches(a);
     }
   };
 
@@ -135,6 +153,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
     if (cached && decl.value.kind !== "match") {
       // Already evaluated through a use earlier in the file; only the swatch is missing.
       result.colors.push({ range: decl.value.range, color: cached, literal: decl.value.kind === "color" });
+      argSwatches(decl.value);
       return;
     }
     const color = checkExpr(decl.value);
@@ -156,21 +175,23 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
     for (const st of stmts) {
       if (st.kind === "var") checkVariable(st);
       else if (st.kind === "rule") {
-        if (!registry.isValidName(st.selector)) {
-          const message = registry.unknownNameMessage(st.selector);
+        const kind = registry.classify(st.selector, st.target);
+        if (!kind) {
+          const message = registry.unknownNameMessage(st.selector, st.target);
           result.problems.push({
             range: st.selectorRange,
-            message: message.startsWith("Unknown token type")
+            message: message.startsWith("Unknown token type") && !st.target
               ? `${message}: this rule has no effect. TextMate scopes contain a dot, e.g. string.quoted`
               : `${message}; this rule has no effect`,
-            warning: true,
+            // A typo under an explicit kind is certain; without one it might be a scope we don't know.
+            warning: !st.target,
           });
         }
-        if (isUiColor(st.selector) && hasStyle(st.value)) {
+        if (kind === "ui" && hasStyle(st.value)) {
           result.problems.push({ range: st.selectorRange, message: "UI colors take a color; style() only applies to tokens" });
         }
         checkValue(st.value);
-      } else if (st.kind === "override") check(st.body);
+      } else if (st.kind === "override" || st.kind === "target") check(st.body);
       else st.arms.forEach((a) => check(a.body));
     }
   };
@@ -207,6 +228,10 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         apply(st.body, true);
         continue;
       }
+      if (st.kind === "target") {
+        apply(st.body, override);
+        continue;
+      }
       if (st.kind !== "rule") continue;
       const line = st.selectorRange.start.line + 1;
       let value;
@@ -221,12 +246,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         result.log.push(`skip  ${st.selector} (line ${line}): no match arm applies to this theme`);
         continue;
       }
-      if (!registry.isValidName(st.selector)) {
-        result.log.push(`skip  ${st.selector} (line ${line}): unknown token type`);
+      const kind = registry.classify(st.selector, st.target);
+      if (!kind) {
+        result.log.push(`skip  ${st.selector} (line ${line}): ${registry.unknownNameMessage(st.selector, st.target)}`);
         continue;
       }
-      if (isUiColor(st.selector)) {
-        const id = st.selector.slice(UI_PREFIX.length);
+      if (kind === "ui") {
+        const id = st.selector;
         if (value === NONE) {
           delete result.ui[id];
           result.log.push(`none  ${st.selector} (line ${line})`);
@@ -240,8 +266,9 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         }
         continue;
       }
-      const semantic = registry.isSemantic(st.selector);
-      const scopes = semantic ? registry.ownScopes(st.selector) : [st.selector];
+      const semantic = kind === "semantic";
+      // An explicit semantic rule is only the semantic rule.
+      const scopes = !semantic ? [st.selector] : st.target ? [] : registry.ownScopes(st.selector);
       if (value === NONE) {
         delete result.rules[st.selector];
         scopes.forEach((s) => delete result.textMate[s]);

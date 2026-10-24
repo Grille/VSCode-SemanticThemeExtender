@@ -6,13 +6,16 @@
 //                                      semantic selectors (struct, variable.readonly) also set their
 //                                      TextMate fallback scope; other dotted names are TextMate scopes
 //   override rule | override { rules }  rules that also replace the theme's own colors
+//   ui | semantic | textmate rule or { rules }  say what kind of name a selector is, instead of
+//                                      inferring it: token type, then UI color ID, then TextMate scope
 //   match $type { dark & contrast { rules } _ { rules } }      block: rules for matching themes
 //
 // Later rules in the file override earlier ones for the same selector.
 //   value: color | style(color, bold | !italic) | $none | match $type { dark -> value  _ -> value }
 //
 // Keywords are only recognized where a token name could not stand: "match" must be followed by
-// a $subject, "style" by "(", "override" by "{" or a statement, and a selector by "=".
+// a $subject, "style" by "(", "override" / "ui" / "semantic" / "textmate" by "{" or a statement
+// (or by a name, in values: ui editor.background), and a selector by "=".
 
 import { Color, parseHex } from "./color";
 
@@ -44,7 +47,8 @@ export type Pattern =
 export type Expr =
   | { kind: "color"; value: Color; range: Range }
   | { kind: "var"; name: string; range: Range }
-  | { kind: "ref"; name: string; range: Range }
+  /** A theme color; kind is set when a keyword names it explicitly: ui editor.background. */
+  | { kind: "ref"; name: string; target?: NameKind; range: Range }
   | { kind: "num"; value: number; unit: NumUnit; decimal: boolean; range: Range }
   | { kind: "call"; fn: string; args: Expr[]; range: Range; nameRange: Range }
   /** A $type condition like "light & !contrast", only valid where a function expects one. */
@@ -81,11 +85,21 @@ export interface Rule {
   kind: "rule";
   selector: string;
   selectorRange: Range;
+  /** Set inside ui / semantic / textmate; otherwise the kind is inferred from the name. */
+  target?: NameKind;
   value: Value;
 }
 
 export interface Override {
   kind: "override";
+  body: Stmt[];
+  range: Range;
+}
+
+/** ui { rules }, semantic { rules }, textmate { rules }; the rules inside carry the kind. */
+export interface Target {
+  kind: "target";
+  target: NameKind;
   body: Stmt[];
   range: Range;
 }
@@ -97,13 +111,18 @@ export interface Block {
   range: Range;
 }
 
-export type Stmt = VarDecl | Rule | Block | Override;
+export type Stmt = VarDecl | Rule | Block | Override | Target;
 
 export interface RulesFile {
   stmts: Stmt[];
   variables: Map<string, VarDecl>;
   problems: Problem[];
 }
+
+/** What a name refers to: a semantic token selector, a TextMate scope or a UI color ID. */
+export type NameKind = "semantic" | "textmate" | "ui";
+export const NAME_KINDS: NameKind[] = ["semantic", "textmate", "ui"];
+const isNameKind = (text: string): text is NameKind => (NAME_KINDS as string[]).includes(text);
 
 export type Flag = "dark" | "light" | "contrast";
 export const FLAGS: Flag[] = ["dark", "light", "contrast"];
@@ -214,6 +233,7 @@ export function parseRulesFile(text: string): RulesFile {
   let i = 0;
   let depth = 0; // braces consumed so far, for error recovery
   let overrideDepth = 0;
+  let target: { kind: NameKind; range: Range } | undefined;
 
   const peek = (k = 0) => tokens[i + k];
   const isPunct = (t: Token | undefined, p: string) => t?.type === "punct" && t.text === p;
@@ -348,6 +368,12 @@ export function parseRulesFile(text: string): RulesFile {
         };
       case "ident": {
         next();
+        // "ui editor.background": a name of an explicit kind.
+        if (isNameKind(t.text) && peek()?.type === "ident" && sameLine(t, peek())) {
+          const name = next();
+          if (isPunct(peek(), "(")) fail(`${t.text} applies to a name, not to a function call`, t);
+          return { kind: "ref", name: name.text, target: t.text, range: span(t.range, name.range) };
+        }
         if (!isPunct(peek(), "(")) {
           if (t.text === "_") fail("'_' is only valid as a match pattern", t);
           return { kind: "ref", name: t.text, range: t.range };
@@ -524,6 +550,28 @@ export function parseRulesFile(text: string): RulesFile {
         overrideDepth--;
       }
     }
+    // "ui { rules }" or "ui <statement>", likewise semantic and textmate.
+    if (t.type === "ident" && isNameKind(t.text) && peek(1) && !isPunct(peek(1), "=")) {
+      next();
+      if (target && target.kind !== t.text) {
+        fail(`Already inside ${target.kind} (line ${target.range.start.line + 1}); a name can only be one kind`, t);
+      }
+      if (target) problems.push({ range: t.range, message: `Already inside ${t.text}`, warning: true });
+      const outer = target;
+      target = { kind: t.text, range: t.range };
+      try {
+        if (isPunct(peek(), "{")) {
+          next();
+          const body = parseStatements(false);
+          const close = expect("}", `'}' to close the ${t.text} block`);
+          return { kind: "target", target: t.text, body, range: span(t.range, close.range) };
+        }
+        if (!sameLine(t, peek())) fail(`Expected '{' or a rule after ${t.text}`, t);
+        return { kind: "target", target: t.text, body: [parseStatement(false)], range: t.range };
+      } finally {
+        target = outer;
+      }
+    }
     if (t.type === "ident" && isPunct(peek(1), "?=")) {
       fail("'?=' is not needed: '=' already only fills what the theme leaves; put rules that replace theme colors in override { }", peek(1));
     }
@@ -533,7 +581,7 @@ export function parseRulesFile(text: string): RulesFile {
       if (!/^(\*|[A-Za-z_][\w-]*)(\.[A-Za-z_][\w-]*)*(:[\w-]+)?$/.test(t.text)) {
         problems.push({ range: t.range, message: "Selectors look like 'struct', 'variable.readonly', '*.static' or 'parameter:python'" });
       }
-      return { kind: "rule", selector: t.text, selectorRange: t.range, value: parseValue() };
+      return { kind: "rule", selector: t.text, selectorRange: t.range, target: target?.kind, value: parseValue() };
     }
     if (isPunct(t, "*") && isPunct(peek(1), "=")) {
       return fail("Selectors with '*' need a modifier, e.g. '*.static'");
@@ -541,7 +589,7 @@ export function parseRulesFile(text: string): RulesFile {
     const after = sameLine(t, peek(1)) ? peek(1) : t;
     if (t.type === "var") return fail(`Expected '=' after $${t.text}`, after);
     if (t.type === "ident") return fail(`Expected '=' after '${t.text}'`, after);
-    return fail("Expected a rule (selector = value), a variable ($name = value), a match or an override block");
+    return fail("Expected a rule (selector = value), a variable ($name = value), a match, or an override / ui / semantic / textmate block");
   }
 
   function parseStatements(topLevel: boolean): Stmt[] {
@@ -607,13 +655,15 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   selector = value         e.g. struct = hue(class, -35); skipped where the theme has a rule for exactly it
 ;                            semantic selectors also set their TextMate fallback scope;
 ;                            other dotted names are TextMate scopes: string.quoted.docstring.python = #6A9955
-;   colors.<id> = color      a UI color, e.g. colors.editorBracketHighlight.foreground1 = soften(keyword)
+;   editorCursor.foreground  UI color IDs are UI colors: editorBracketHighlight.foreground1 = soften(keyword)
+;   ui | semantic | textmate say the kind instead of inferring it: textmate comment = #6A9955,
+;                            semantic struct = ... (no TextMate fallback), ui { rules }, ui editor.background
 ;   override rule            also replaces the theme's own color; override { rules } for several
 ;   $name = color            variable: top level, assigned once, use as $name
 ;
 ;   class, function, ...     the active theme's color for a semantic token type
 ;   variable.language        the active theme's color for a TextMate scope (names with a dot)
-;   colors.editor.background the active theme's UI color
+;   editor.background        the active theme's UI color
 ;   functions    offset(c, base, target[, condition]): apply the change from base to target;
 ;                the lightness change flips where the condition holds, e.g. light
 ;                emphasize soften (contrast to the background), lighten darken

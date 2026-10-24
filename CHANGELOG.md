@@ -9,6 +9,7 @@
 - `offset(c, base, target, light)`: transfer a measured color relationship to any theme, flipping lightness where a `$type` condition holds; defaults use it to reproduce Visual Studio's type colors.
 - `dark` / `light` are decided once from the editor background, the same for `match $type` and every contrast-aware function.
 - TextMate scopes as selectors; semantic rules also set their TextMate fallback scope.
-- UI colors as `colors.<id>`, read and written, e.g. bracket pair colors derived from the theme.
+- UI colors by their ID, read and written, e.g. bracket pair colors derived from the theme.
+- `ui`, `semantic` and `textmate` say what kind of name a rule or value uses, for one rule or a block.
 - Settings only hold a section for the active theme; "already colored" means an exact theme rule.
 - Synced rules editor with diagnostics, color swatches, hover and completion.

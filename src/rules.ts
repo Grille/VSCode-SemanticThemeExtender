@@ -1,12 +1,12 @@
 // Color functions and evaluation of color expressions.
 
-import { Expr, Flag, matchesPattern, NumUnit, Range } from "./cfg";
+import { Expr, Flag, matchesPattern, NameKind, NumUnit, Range } from "./cfg";
 import * as color from "./color";
 import { Color } from "./color";
 
 export interface EvalContext {
   variable(name: string, range: Range): Color;
-  ref(name: string, range: Range): Color;
+  ref(name: string, range: Range, target?: NameKind): Color;
   /** The theme's editor background, for contrast-aware functions. */
   background(): Color;
   flags: Set<Flag>;
@@ -133,7 +133,7 @@ function evalArg(e: Expr, ctx: EvalContext): Color | Num {
     case "var":
       return ctx.variable(e.name, e.range);
     case "ref":
-      return ctx.ref(e.name, e.range);
+      return ctx.ref(e.name, e.range, e.target);
     case "condition":
       throw new EvalError("A condition is only valid as the last argument of offset()", e.range);
     case "match": {

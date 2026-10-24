@@ -63,7 +63,26 @@ export function activate(context: vscode.ExtensionContext) {
     { dispose: () => clearInterval(poll) },
   );
 
+  context.subscriptions.push(vscode.workspace.onDidOpenTextDocument(refillRulesTab));
+  vscode.workspace.textDocuments.forEach(refillRulesTab);
+
   schedule(true);
+}
+
+/**
+ * A rules tab whose read failed, e.g. while the extension host was restarting, stays empty and
+ * doesn't recover from a change event; unless it has unsaved edits, give it the stored text.
+ */
+async function refillRulesTab(doc: vscode.TextDocument) {
+  if (doc.uri.toString() !== RULES_URI.toString() || doc.isDirty) return;
+  const text = store.text;
+  const shown = doc.getText();
+  if (shown === text) return;
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(doc.uri, new vscode.Range(doc.positionAt(0), doc.positionAt(shown.length)), text);
+  if ((await vscode.workspace.applyEdit(edit)) && (await doc.save())) {
+    output.appendLine(`Rules tab showed ${shown.length ? "outdated" : "no"} content; refilled it from the stored rules.`);
+  }
 }
 
 export function deactivate() {}
@@ -151,7 +170,9 @@ async function apply(verbose = false) {
   log.forEach((l) => output.appendLine(l));
 
   // Store ownership first: if a write fails half way, the next apply can still clean up.
-  await state.update(OWNED_KEY, next.owned);
+  if (JSON.stringify(state.get(OWNED_KEY)) !== JSON.stringify(next.owned)) {
+    await state.update(OWNED_KEY, next.owned);
+  }
   const wrote = await writeSettings(before, next);
   output.appendLine(
     wrote

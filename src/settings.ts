@@ -113,7 +113,14 @@ export function write(
     }
   }
 
-  const entries = Object.entries(textMateRules).map(([scope, settings]) => ({ scope, settings }));
+  // One entry per distinct settings, listing every scope that uses them.
+  const groups = new Map<string, { scope: string[]; settings: TextMateSettings }>();
+  for (const [scope, settings] of Object.entries(textMateRules)) {
+    const key = JSON.stringify(settings);
+    const group = groups.get(key) ?? groups.set(key, { scope: [], settings }).get(key)!;
+    group.scope.push(scope);
+  }
+  const entries = [...groups.values()].map(({ scope, settings }) => ({ scope: scope.length === 1 ? scope[0] : scope, settings }));
   if (entries.length) {
     tm[section] = { ...(tm[section] ?? {}) };
     const existing = Array.isArray(tm[section].textMateRules) ? tm[section].textMateRules : [];

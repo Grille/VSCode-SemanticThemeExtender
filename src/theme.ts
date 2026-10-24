@@ -4,7 +4,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { Flag, themeFlags } from "./cfg";
+import { Flag, NameKind, themeFlags } from "./cfg";
 import { lightness, parseHex } from "./color";
 import { UI_COLORS } from "./uiColors";
 
@@ -73,11 +73,6 @@ const STANDARD_MODIFIERS = ["declaration", "definition", "readonly", "static", "
 const TEXTMATE_ROOTS = new Set(["constant", "entity", "invalid", "markup", "meta", "punctuation", "storage", "support", "source", "text"]);
 
 export const STANDARD_TYPES = Object.keys(STANDARD_SCOPES);
-
-/** UI colors (the theme's "colors" section) are written colors.<id>, e.g. colors.editor.background. */
-export const UI_PREFIX = "colors.";
-
-export const isUiColor = (name: string) => name.startsWith(UI_PREFIX);
 
 /** Default values for [dark, light, hcDark, hcLight]; a value may also name another UI color. */
 type UiDefaults = [string | null, string | null, string | null, string | null];
@@ -210,17 +205,26 @@ export class TokenRegistry {
   }
 
   /**
-   * UI colors must be known to VS Code or an installed extension; names without a dot must be
-   * token types or top-level TextMate scopes; anything else is a typo.
+   * What a name refers to. With an explicit kind (ui x, semantic x, textmate x) the name must fit
+   * it; otherwise token types come first, then UI color IDs, then TextMate scopes (names with a
+   * dot, or top-level scopes). Undefined means a typo.
    */
-  isValidName(name: string): boolean {
-    if (isUiColor(name)) return this.uiColors.has(name.slice(UI_PREFIX.length));
-    return this.isSemantic(name) || name.includes(".") || TEXTMATE_ROOTS.has(name);
+  classify(name: string, explicit?: NameKind): NameKind | undefined {
+    if (explicit === "semantic" || explicit === "ui") return this.fits(name, explicit) ? explicit : undefined;
+    if (explicit === "textmate") return "textmate";
+    if (this.isSemantic(name)) return "semantic";
+    if (this.uiColors.has(name)) return "ui";
+    if (name.includes(".") || TEXTMATE_ROOTS.has(name)) return "textmate";
+    return undefined;
   }
 
-  /** Why isValidName rejected a name; modifiers alone are a common slip. */
-  unknownNameMessage(name: string): string {
-    if (isUiColor(name)) return `Unknown UI color '${name.slice(UI_PREFIX.length)}'`;
+  private fits(name: string, kind: "semantic" | "ui") {
+    return kind === "ui" ? this.uiColors.has(name) : this.isSemantic(name);
+  }
+
+  /** Why classify found nothing; modifiers alone are a common slip. */
+  unknownNameMessage(name: string, explicit?: NameKind): string {
+    if (explicit === "ui") return `Unknown UI color '${name}'`;
     const { type } = parseSelector(name);
     if (this.modifiers.has(type)) {
       return `'${type}' is a modifier, not a token type: write *.${type} for every token type, or e.g. variable.${type}`;
@@ -266,7 +270,7 @@ export class TokenRegistry {
     return [...this.types].sort();
   }
 
-  /** UI color IDs from VS Code and installed extensions, without the colors. prefix. */
+  /** UI color IDs from VS Code and installed extensions. */
   allUiColors(): string[] {
     return [...this.uiColors.keys()].sort();
   }
@@ -321,16 +325,18 @@ export class ThemeResolver {
 
   /**
    * The theme's color for a name: semantic selectors (type plus known modifiers, optionally
-   * ":language") resolve like VS Code does, anything else is a TextMate scope.
+   * ":language") resolve like VS Code does, UI colors to the theme's value or VS Code's default,
+   * TextMate scopes by longest prefix match.
    */
-  resolve(ref: string): Resolution {
-    if (isUiColor(ref)) {
-      return this.uiColor(ref.slice(UI_PREFIX.length));
+  resolve(ref: string, explicit?: NameKind): Resolution {
+    const kind = this.registry.classify(ref, explicit);
+    if (!kind) {
+      throw new Error(this.registry.unknownNameMessage(ref, explicit));
     }
-    if (!this.registry.isValidName(ref)) {
-      throw new Error(this.registry.unknownNameMessage(ref));
+    if (kind === "ui") {
+      return this.uiColor(ref);
     }
-    if (!this.registry.isSemantic(ref)) {
+    if (kind === "textmate") {
       return this.textMate([ref]) ?? { color: this.foreground, source: "editor foreground (no matching TextMate rule)" };
     }
     const semantic = this.semanticRule(ref);

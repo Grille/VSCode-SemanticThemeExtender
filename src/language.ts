@@ -1,11 +1,11 @@
 // Editor support for .str rules files: diagnostics, color swatches, hover and completion.
 
 import * as vscode from "vscode";
-import { CONDITION_ARGS, FLAGS, parseRulesFile, Range, STYLE_NAMES } from "./cfg";
+import { CONDITION_ARGS, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Range, Rule, Stmt, STYLE_NAMES } from "./cfg";
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
-import { isUiColor, ThemeResolver, UI_PREFIX } from "./theme";
+import { ThemeResolver } from "./theme";
 
 export const LANGUAGE_ID = "semantic-theme-rules";
 
@@ -14,7 +14,9 @@ export interface LanguageHost {
 }
 
 const STYLES = [...STYLE_NAMES];
-const KEYWORDS = new Set(["match", "style", "override", "_"]);
+const KEYWORDS = new Set(["match", "style", "override", ...NAME_KINDS, "_"]);
+
+const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
 const FUNCTION_DOCS: Record<string, [string, string]> = {
   style: ["style(${1:color}, ${2:bold})", "Font styles for the whole value: style(color, bold | !italic). style(underline) keeps the theme's color."],
@@ -124,7 +126,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
 
   const uiColorItems = (resolver: ThemeResolver | undefined) =>
     (resolver?.registry.allUiColors() ?? []).map((id) => {
-      const item = new vscode.CompletionItem(UI_PREFIX + id, vscode.CompletionItemKind.Color);
+      const item = new vscode.CompletionItem(id, vscode.CompletionItemKind.Color);
       try {
         const r = resolver!.uiColor(id);
         item.detail = r.color;
@@ -208,22 +210,26 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
         const isSelector = /^\s*=/.test(after);
         if (!isSelector && (word in FUNCTIONS || STYLE_NAMES.has(word) || KEYWORDS.has(word))) return undefined;
         if (!resolver) return undefined;
+        // "ui name" right before, or a rule inside a ui { } block.
+        const explicit =
+          (/\b(ui|semantic|textmate)\s+$/.exec(line.slice(0, range.start.character))?.[1] as NameKind | undefined) ??
+          (isSelector ? ruleAt(parseRulesFile(doc.getText()).stmts, range.start)?.target : undefined);
+        const kind = resolver.registry.classify(word, explicit);
         try {
-          const r = resolver.resolve(word);
+          const r = resolver.resolve(word, explicit);
           md.appendMarkdown(`**${word}** in *${resolver.theme.id}*: \`${r.color}\` from ${r.source}`);
         } catch (e) {
           md.appendMarkdown((e as Error).message);
         }
-        if (isSelector && isUiColor(word)) {
-          const generated = result?.ui[word.slice(UI_PREFIX.length)];
-          md.appendMarkdown("\n\nUI color.");
+        if (kind) md.appendMarkdown(`\n\n${KIND_LABELS[kind]}${explicit ? ` (${explicit})` : ""}.`);
+        if (isSelector && kind === "ui") {
+          const generated = result?.ui[word];
           md.appendMarkdown(generated !== undefined ? `\n\nGenerated: \`${generated}\`` : "\n\nNo rule generated for this theme.");
-        } else if (isSelector) {
-          const semantic = resolver.registry.isSemantic(word);
-          const generated = result?.rules[word];
-          const scopes = semantic ? resolver.registry.ownScopes(word) : [word];
+        } else if (isSelector && kind) {
+          const semantic = kind === "semantic";
+          const generated = semantic ? result?.rules[word] : undefined;
+          const scopes = !semantic ? [word] : explicit ? [] : resolver.registry.ownScopes(word);
           const textMate = scopes.filter((s) => result?.textMate[s]).map((s) => `\`${s}\` = \`${JSON.stringify(result!.textMate[s])}\``);
-          md.appendMarkdown(`\n\n${semantic ? "Semantic selector" : "TextMate scope"}.`);
           if (generated !== undefined) md.appendMarkdown(`\n\nGenerated: \`${JSON.stringify(generated)}\``);
           if (textMate.length) md.appendMarkdown(`\n\nTextMate: ${textMate.join(", ")}`);
           if (generated === undefined && !textMate.length) md.appendMarkdown("\n\nNo rule generated for this theme.");
@@ -282,6 +288,9 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               ...uiColorItems(resolver),
               matchSnippet(false),
               snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
+              snippet("ui", "ui {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules for UI colors, e.g. editorBracketHighlight.foreground1"),
+              snippet("semantic", "semantic {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Only semantic rules, without their TextMate fallback scope"),
+              snippet("textmate", "textmate {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Names taken literally as TextMate scopes"),
             ];
           }
 
@@ -320,6 +329,19 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
       }
     },
   };
+}
+
+/** The rule whose selector starts at pos, searching nested blocks. */
+function ruleAt(stmts: Stmt[], pos: vscode.Position): Rule | undefined {
+  for (const st of stmts) {
+    if (st.kind === "rule" && st.selectorRange.start.line === pos.line && st.selectorRange.start.col === pos.character) return st;
+    const bodies = st.kind === "override" || st.kind === "target" ? [st.body] : st.kind === "block" ? st.arms.map((a) => a.body) : [];
+    for (const body of bodies) {
+      const found = ruleAt(body, pos);
+      if (found) return found;
+    }
+  }
+  return undefined;
 }
 
 type CursorContext =

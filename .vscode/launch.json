@@ -5,17 +5,23 @@
       "name": "Run Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      // Claude Code is left out: its auto-update keeps retrying in every window, and test windows
+      // crashed (exit code 134) right around those attempts. The test window doesn't need it.
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "--disable-extension=anthropic.claude-code"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "compile"
     },
     {
       // Copilot Chat logs "EXTENSION WILL BE BROKEN" in development hosts right before the
       // extension host crashes (exit code 134); this keeps every other extension.
-      "name": "Run Extension (without Copilot Chat)",
+      "name": "Run Extension (without Claude Code and Copilot Chat)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "--disable-extension=github.copilot-chat"],
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--disable-extension=anthropic.claude-code",
+        "--disable-extension=github.copilot-chat"
+      ],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "compile"
     },
