@@ -43,9 +43,12 @@ export type Expr =
   | { kind: "color"; value: Color; range: Range }
   | { kind: "var"; name: string; range: Range }
   | { kind: "ref"; name: string; range: Range }
-  | { kind: "num"; value: number; range: Range }
+  | { kind: "num"; value: number; unit: NumUnit; decimal: boolean; range: Range }
   | { kind: "call"; fn: string; args: Expr[]; range: Range; nameRange: Range }
   | { kind: "match"; subject: Subject; arms: Arm<Expr>[]; range: Range };
+
+/** "10%" is percent, "30deg" / "30°" degrees; decimal tells "1.0" from "1" (0-1 vs 0-255 in rgb). */
+export type NumUnit = "none" | "percent" | "deg";
 
 export interface StyleFlag {
   name: "bold" | "italic" | "underline" | "strikethrough";
@@ -160,7 +163,7 @@ class ParseError extends Error {
 }
 
 const TOKEN_RE =
-  /(#[0-9a-fA-F]+)|\$([\w-]*)|((?:\*(?=\.)|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?\d*\.?\d+%?)|("[^"\n]*"?)|(\?=|->|[=(),!|&{}*])/y;
+  /(#[0-9a-fA-F]+)|\$([\w-]*)|((?:\*(?=\.)|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(\?=|->|[=(),!|&{}*])/y;
 
 function tokenize(text: string, problems: Problem[]): Token[] {
   const tokens: Token[] = [];
@@ -331,7 +334,13 @@ export function parseRulesFile(text: string): RulesFile {
         return { kind: "var", name: t.text, range: t.range };
       case "num":
         next();
-        return { kind: "num", value: t.text.endsWith("%") ? parseFloat(t.text) / 100 : parseFloat(t.text), range: t.range };
+        return {
+          kind: "num",
+          value: parseFloat(t.text),
+          unit: t.text.endsWith("%") ? "percent" : /deg$|°$/.test(t.text) ? "deg" : "none",
+          decimal: t.text.includes("."),
+          range: t.range,
+        };
       case "ident": {
         next();
         if (!isPunct(peek(), "(")) {

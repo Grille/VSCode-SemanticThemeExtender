@@ -1,6 +1,6 @@
 // Color functions and evaluation of color expressions.
 
-import { Expr, Flag, matchesPattern, Range } from "./cfg";
+import { Expr, Flag, matchesPattern, NumUnit, Range } from "./cfg";
 import * as color from "./color";
 import { Color } from "./color";
 
@@ -30,29 +30,90 @@ const onDark = (ctx: EvalContext) => color.lightness(ctx.background()) < 0.5;
 const emphasize = (ctx: EvalContext, c: Color, amount = 0.1) =>
   onDark(ctx) ? color.lighten(c, amount) : color.darken(c, amount);
 
+// Argument kinds; numbers keep their unit until they reach a function, which checks and converts:
+//   amount   10% or 0.1                   (percent converts to a factor)
+//   angle    30, 30deg or 30°             (degrees; % is an error)
+//   channel  0-255, 0.0-1.0 or 0%-100%    (integers vs decimals decide the scale)
+//   alpha    0.5, 50%, or 0-255
+type ArgKind = "color" | "amount" | "angle" | "channel" | "alpha";
+
+interface Num {
+  num: number;
+  unit: NumUnit;
+  decimal: boolean;
+}
+
+const isNum = (v: Color | Num): v is Num => "num" in v;
+
+const KIND_TEXT: Record<ArgKind, string> = {
+  color: "a color",
+  amount: "an amount like 10% or 0.1",
+  angle: "an angle in degrees like 30",
+  channel: "a channel value: 0-255, 0.0-1.0 or a percentage",
+  alpha: "an opacity like 0.5 or 50%",
+};
+
 export const FUNCTIONS: Record<
   string,
-  { sig: ("c" | "n")[]; optional?: number; fn: (...a: any[]) => Color; contextual?: boolean }
+  { sig: ArgKind[]; optional?: number; fn: (...a: any[]) => Color; contextual?: boolean }
 > = {
-  emphasize: { sig: ["c", "n"], optional: 1, contextual: true, fn: emphasize },
-  soften: { sig: ["c", "n"], optional: 1, contextual: true, fn: (ctx, c, amount = 0.1) => emphasize(ctx, c, -amount) },
-  rgb: { sig: ["n", "n", "n", "n"], optional: 1, fn: (r, g, b, a = 1) => ({ r: r / 255, g: g / 255, b: b / 255, a: a > 1 ? a / 255 : a }) },
-  lighten: { sig: ["c", "n"], fn: color.lighten },
-  darken: { sig: ["c", "n"], fn: color.darken },
-  saturate: { sig: ["c", "n"], fn: color.saturate },
-  desaturate: { sig: ["c", "n"], fn: color.desaturate },
-  hue: { sig: ["c", "n"], fn: color.rotateHue },
-  alpha: { sig: ["c", "n"], fn: color.withAlpha },
-  mix: { sig: ["c", "c", "n"], optional: 1, fn: (a, b, t = 0.5) => color.mix(a, b, t) },
+  emphasize: { sig: ["color", "amount"], optional: 1, contextual: true, fn: emphasize },
+  soften: { sig: ["color", "amount"], optional: 1, contextual: true, fn: (ctx, c, amount = 0.1) => emphasize(ctx, c, -amount) },
+  rgb: { sig: ["channel", "channel", "channel", "alpha"], optional: 1, fn: (r, g, b, a = 1) => ({ r, g, b, a }) },
+  lighten: { sig: ["color", "amount"], fn: color.lighten },
+  darken: { sig: ["color", "amount"], fn: color.darken },
+  saturate: { sig: ["color", "amount"], fn: color.saturate },
+  desaturate: { sig: ["color", "amount"], fn: color.desaturate },
+  hue: { sig: ["color", "angle"], fn: color.rotateHue },
+  alpha: { sig: ["color", "alpha"], fn: color.withAlpha },
+  mix: { sig: ["color", "color", "amount"], optional: 1, fn: (a, b, t = 0.5) => color.mix(a, b, t) },
 };
 FUNCTIONS.rgba = FUNCTIONS.rgb;
 
-function evalArg(e: Expr, ctx: EvalContext): Color | number {
+/** Converts a number argument to what the function expects, or explains why it doesn't fit. */
+function convert(n: Num, kind: ArgKind, fn: string, range: Range): number {
+  const wrong = (why: string) => new EvalError(`${fn}() expects ${KIND_TEXT[kind]}${why}`, range);
+  switch (kind) {
+    case "amount":
+      if (n.unit === "deg") throw wrong(", not an angle");
+      return n.unit === "percent" ? n.num / 100 : n.num;
+    case "angle":
+      if (n.unit === "percent") throw wrong(", not a percentage");
+      return n.num;
+    case "alpha":
+      if (n.unit === "deg") throw wrong(", not an angle");
+      if (n.unit === "percent") return n.num / 100;
+      return n.num > 1 ? n.num / 255 : n.num;
+    case "channel":
+      if (n.unit === "deg") throw wrong(", not an angle");
+      if (n.unit === "percent") return n.num / 100;
+      if (n.decimal && n.num > 1) throw wrong("; decimals are 0.0-1.0, use integers for 0-255");
+      if (!n.decimal && n.num > 255) throw wrong("; integers are 0-255");
+      return n.decimal ? n.num : n.num / 255;
+    case "color":
+      throw wrong(", not a number");
+  }
+}
+
+/** rgb(0, 100, 200) is 0-255 and rgb(0.5, 1.0, 0.2) is 0-1; mixing the two is almost always a mistake. */
+function checkChannelScale(args: { v: Color | Num; range: Range }[], fn: string) {
+  const plain = args.slice(0, 3).filter((a) => isNum(a.v) && a.v.unit === "none" && a.v.num !== 0);
+  const decimal = plain.find((a) => (a.v as Num).decimal);
+  const integer = plain.find((a) => !(a.v as Num).decimal);
+  if (decimal && integer) {
+    throw new EvalError(
+      `${fn}() mixes 0-255 and 0.0-1.0 values; write all channels as integers (0-255) or all with a decimal point (0.0-1.0)`,
+      decimal.range,
+    );
+  }
+}
+
+function evalArg(e: Expr, ctx: EvalContext): Color | Num {
   switch (e.kind) {
     case "color":
       return e.value;
     case "num":
-      return e.value;
+      return { num: e.value, unit: e.unit, decimal: e.decimal };
     case "var":
       return ctx.variable(e.name, e.range);
     case "ref":
@@ -69,13 +130,15 @@ function evalArg(e: Expr, ctx: EvalContext): Color | number {
       if (e.args.length < min || e.args.length > f.sig.length) {
         throw new EvalError(`${e.fn}() takes ${min === f.sig.length ? min : `${min}-${f.sig.length}`} arguments`, e.range);
       }
-      const args = e.args.map((a, i) => {
-        const v = evalArg(a, ctx);
-        const want = f.sig[i];
-        if ((want === "n") !== (typeof v === "number")) {
-          throw new EvalError(`${e.fn}() argument ${i + 1} must be a ${want === "n" ? "number" : "color"}`, a.range);
+      const raw = e.args.map((a) => ({ v: evalArg(a, ctx), range: a.range }));
+      if (f.sig[0] === "channel") checkChannelScale(raw, e.fn);
+      const args = raw.map(({ v, range }, i) => {
+        const kind = f.sig[i];
+        if (!isNum(v)) {
+          if (kind !== "color") throw new EvalError(`${e.fn}() argument ${i + 1} expects ${KIND_TEXT[kind]}, not a color`, range);
+          return v;
         }
-        return v;
+        return convert(v, kind, e.fn, range);
       });
       return f.contextual ? f.fn(ctx, ...args) : f.fn(...args);
     }
@@ -84,6 +147,6 @@ function evalArg(e: Expr, ctx: EvalContext): Color | number {
 
 export function evaluateColor(e: Expr, ctx: EvalContext): Color {
   const v = evalArg(e, ctx);
-  if (typeof v === "number") throw new EvalError("Expected a color, not a number", e.range);
+  if (isNum(v)) throw new EvalError("Expected a color, not a number", e.range);
   return v;
 }

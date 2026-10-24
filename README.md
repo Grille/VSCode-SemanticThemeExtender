@@ -52,13 +52,17 @@ match $theme {
 | `class`, `function` | The active theme's color for that semantic token type |
 | `variable.language` | The active theme's color for a TextMate scope (any name with a dot) |
 | `$name = color` | Variable: top level only, assigned once |
-| `#86C691`, `rgb(134, 198, 145)` | A literal color |
+| `#86C691`, `rgb(134, 198, 145)` | A literal color. `rgb` takes integers 0-255, decimals 0.0-1.0 (`rgb(0.5, 1.0, 0.2)`) or percentages, plus an optional alpha |
 | `emphasize(c, 10%)`, `soften(c, 10%)` | More / less contrast to the editor background: lighter on dark themes, darker on light ones |
-| `lighten(c, 10%)`, `darken`, `saturate`, `desaturate` | Adjust lightness or chroma (OKLCH) |
-| `hue(c, 30)` | Rotate the hue by degrees |
+| `lighten(c, 10%)`, `darken` | Change lightness (OKLCH, 0-1) by an absolute amount: 10% adds or subtracts 0.1 |
+| `saturate(c, 20%)`, `desaturate` | Scale chroma relatively: 20% means x 1.2 or x 0.8 |
+| `hue(c, 30)` | Rotate the hue by degrees; `30deg` and `30°` also work |
 | `mix(a, b, 0.5)`, `alpha(c, 50%)` | Blend two colors, set opacity |
 | `style(c, bold | !italic)` | Font styles; `style(underline)` keeps the theme's color |
 | `$none` | No rule for this selector |
+
+Numbers keep their unit: `10%` is the same as `0.1` wherever an amount is expected, and a
+unit that doesn't fit (`hue(c, 30%)`, `lighten(c, 10deg)`) is an error.
 
 ### Matching themes
 
