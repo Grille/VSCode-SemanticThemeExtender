@@ -12,7 +12,8 @@
 //
 // A project's rules file (.vscode/semantic-theme.str) only applies to its own window, so nothing
 // from it goes to settings, which all windows share: plain semantic selectors are drawn as
-// decorations like every other head, and UI colors and TextMate scopes are errors.
+// decorations like every other head, and UI colors and TextMate scopes are errors. It is meant for
+// += (what tokens are); colors there are drawn but warned about, they belong in the global rules.
 
 import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
 import { planRule } from "./plan";
@@ -36,12 +37,15 @@ export interface TextMateSettings {
 export interface TextRule {
   when: TokenCondition;
   style: StyleValue;
+  /** 1-based, for Inspect Token. */
+  line: number;
 }
 
 /** head += slotted: custom modifiers given to matching tokens before any rule is drawn. */
 export interface TagRule {
   when: TokenCondition;
   modifiers: string[];
+  line: number;
 }
 
 
@@ -243,6 +247,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
             range: st.selectorRange,
             message: `Project rules only color semantic tokens; UI colors and TextMate scopes (${notSemantic.map((n) => `'${n}'`).join(", ")}) go in the global rules`,
           });
+        } else if (options.project) {
+          // Still drawn, but colors are better kept in one place for every project.
+          result.problems.push({
+            range: st.selectorRange,
+            message: "Project files are for what tokens are (head += slotted); how they look belongs in the global rules (Open Rules), where your $variables are and it's the same in every project",
+            warning: true,
+          });
         } else if (plan.names?.some((n) => registry.classify(n, st.target) === "ui") && hasStyle(st.value)) {
           result.problems.push({ range: st.selectorRange, message: "UI colors take a color; style() only applies to tokens" });
         }
@@ -294,7 +305,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
       if (st.kind === "tag") {
         if (st.target && st.target !== "semantic") continue;
         const when = stripCondition(headOf(st));
-        result.tagRules.push({ when, modifiers: st.modifiers });
+        result.tagRules.push({ when, modifiers: st.modifiers, line: st.selectorRange.start.line + 1 });
         result.log.push(`tag   ${conditionText(when)} += ${st.modifiers.join(", ")}  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }
@@ -332,7 +343,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
     if (value === NONE) {
       result.log.push(`none  ${name} (line ${line})`);
     } else {
-      result.textRules.push({ when, style: value });
+      result.textRules.push({ when, style: value, line });
       result.log.push(`deco  ${name} = ${JSON.stringify(value)}  (line ${line})`);
     }
   };

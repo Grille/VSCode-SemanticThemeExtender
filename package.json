@@ -64,6 +64,11 @@
         "category": "Semantic Theme Extender"
       },
       {
+        "command": "semanticThemeExtender.inspectToken",
+        "title": "Inspect Token",
+        "category": "Semantic Theme Extender"
+      },
+      {
         "command": "semanticThemeExtender.showResolved",
         "title": "Show Resolved Theme Colors",
         "category": "Semantic Theme Extender"

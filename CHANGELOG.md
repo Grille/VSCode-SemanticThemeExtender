@@ -11,9 +11,10 @@
 - TextMate scopes as selectors; semantic rules also set their TextMate fallback scope.
 - UI colors by their ID, read and written, e.g. bracket pair colors derived from the theme.
 - Rule heads are selector expressions: `struct | enum`, `language(python) selfParameter`, `text(...)`, `contains(...)`, combined with `&` (or side by side), `|`, `!` and parentheses; plain selectors still go to settings, everything else is drawn as decorations.
-- `contains(...)`: color classes (or other symbols) by what they contain, e.g. classes defining `__slots__`.
+- `contains(...)`: color classes (or other symbols) by what they contain, e.g. classes defining `__slots__`, also where they're used in other files.
 - `within(...)`: tokens inside a matching symbol; `inherits(...)`: types with a matching base type, across files, via the type hierarchy.
-- Custom modifiers: `head += slotted` gives matching tokens a modifier any rule can select (`class.slotted`), across rules files.
+- Custom modifiers: `head += slotted` gives matching tokens a modifier any rule can select (`class.slotted`), across rules files; names used in another file take over their definition's custom modifiers.
+- **Inspect Token** command: type, modifiers (custom ones with their origin) and matching drawn rules for the token at the cursor.
 - Project rules in `.vscode/semantic-theme.str`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
 - `@name => head` names a selector expression for reuse in heads as `@name`.
 - `text()` and `contains()` conditions combine with `&`, `|`, `!` and parentheses.

@@ -66,11 +66,11 @@ override ui {
 | `editorBracketHighlight.foreground1` | UI color: any color ID VS Code or an installed extension knows. Takes a color, not `style()` |
 | `struct \| enum`, `variable *.readonly`, `language(python) selfParameter` | A rule's left side is a selector expression: side by side means *and*, plus `\|`, `!` and parentheses. Where it boils down to plain selectors, they go to settings (`struct` and `enum`; `variable.readonly`; `selfParameter:python`) with gap filling and TextMate fallback as usual. `language(python, csharp)` is a list |
 | `text("__slots__") variable.classMember`, `text("__*__", "_*") *` | Only tokens with one of these texts (`*` wildcards) |
-| `contains(text("__slots__") variable.classMember) class` | Only tokens naming a symbol (class, function, …) that directly contains a match: classes that define `__slots__`, at their declaration and uses in the same file. Uses the language server's document symbols. The inside is a selector expression too: `contains(text("__enter__") method \| text("__aenter__") method)` |
+| `contains(text("__slots__") variable.classMember) class` | Only tokens naming a symbol (class, function, …) that directly contains a match: classes that define `__slots__`, at their declaration and wherever they're used, also in other workspace files (the use is looked up with go to definition, a moment after the rest is drawn). Uses the language server's document symbols. The inside is a selector expression too: `contains(text("__enter__") method \| text("__aenter__") method)` |
 | `within(class text("Ctx")) method` | Only tokens inside a symbol whose name token matches: here methods of a class named `Ctx`. Same file, from document symbols |
 | `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance, C# and TypeScript provide it), so it appears a little later |
 | `@slots => contains(text("__slots__") variable.classMember)` | A named selector expression, used as `@slots` in any head: `@slots class = …`, `inherits(@slots) class`, `@slots & !contains(…) class`, or alone: `@slots = …`. Top level only, assigned once, usable before its declaration |
-| `contains(…) class += slotted` | Custom modifiers: tokens the head matches get `slotted`, as if the language server had reported it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in another rules file. Assignments run in order, global rules first, then the project's. Modifiers no language server defines count as custom ones, except as plain names after `string`, `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write `*.foo`, `semantic variable.foo`, or use it in an expression. Rules with custom modifiers are drawn as decorations; one that nothing in the same file assigns gets a hint, in case it's a typo |
+| `contains(…) class += slotted` | Custom modifiers: tokens the head matches get `slotted`, as if the language server had reported it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in another rules file. Assignments run in order, global rules first, then the project's. A name used in one file and defined in another workspace file gets the custom modifiers of its definition (asked of the language server's go to definition), a moment after the rest is drawn. Modifiers no language server defines count as custom ones, except as plain names after `string`, `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write `*.foo`, `semantic variable.foo`, or use it in an expression. Rules with custom modifiers are drawn as decorations; one that nothing in the same file assigns gets a hint, in case it's a typo |
 | `head { rules }` | A block: its head and each rule's head must all hold, e.g. `language(python) { … }`, `contains(…) & !text("_*") { … }` |
 | Decorations | Heads that aren't plain selectors (`text`, `contains`, `!`, two different types, …) are drawn as editor decorations over the language server's semantic tokens instead of written to settings. They always win over the theme and appear shortly after the language server has analyzed the file. Where several match a token, the most specific wins, like VS Code ranks semantic rules: a token type over `*`, more modifiers, a language, then an exact text over a wildcard; file order only between equals |
 | `ui name`, `semantic name`, `textmate name`, `ui { rules }` | Say what kind of name it is instead of inferring it (token type, then UI color ID, then TextMate scope). The name must fit the kind. `semantic` writes only the semantic rule, without the TextMate fallback; `textmate` takes the name literally as a scope. Combines with `override`, also in values: `ui editor.background` |
@@ -112,19 +112,10 @@ you type.
 
 ### Project rules
 
-Rules that only make sense for one codebase go in `.vscode/semantic-theme.str` in that
-workspace folder (**Open Project Rules** creates it), and can be committed with the project.
-They use the same language and apply on save, on top of the global rules, to files in that
-folder only; where a project rule and a global one are equally specific, the project rule wins.
-
-Since settings are shared by all windows, project rules never go there: every project rule,
-`struct = ...` included, is drawn as decorations over the language server's semantic tokens.
-That means semantic selectors only (no UI colors or TextMate scopes), and colors that show up
-once the language server has analyzed the file. Plain selectors still fill only what the theme
-leaves, unless in `override`. Project rules apply in trusted workspaces only.
-
-Custom modifiers split the work: a project file says what tokens are, the global rules (or the
-project file itself) say how that looks, the same in every project.
+What only makes sense for one codebase goes in `.vscode/semantic-theme.str` in that workspace
+folder (**Open Project Rules** creates it), and can be committed with the project. It says what
+tokens are, as custom modifiers; your global rules say how that looks, the same in every
+project and with your own `$variables`:
 
 ```
 ; .vscode/semantic-theme.str
@@ -134,14 +125,20 @@ language(python) {
 }
 
 ; global rules
-class.slotted = style(struct, bold)
+class.slotted = style($struct, bold)
 class.leaky = style(function, bold | italic)
 ```
+
+The project file uses the same language and applies on save, after the global rules, to files in
+that folder only, in trusted workspaces. Color rules there still work, with a warning: they are
+drawn as decorations (settings are shared by all windows), so semantic selectors only, and they
+can't use the global rules' variables.
 
 ## Commands
 
 - **Open Rules**: edit the rules file
 - **Open Project Rules**: edit (or create) the current workspace folder's `.vscode/semantic-theme.str`
+- **Inspect Token**: for the token at the cursor, its type and modifiers (custom ones with the rule or file they came from), and which drawn rules match, the winner first. VS Code's own **Inspect Editor Tokens and Scopes** can't show custom modifiers: they only exist in this extension
 - **Show Resolved Theme Colors**: where each theme color comes from, and what was generated
 - **Apply Semantic Color Rules**: re-apply manually
 - **Reset Rules to Defaults**

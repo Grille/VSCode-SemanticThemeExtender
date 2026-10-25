@@ -26,7 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider("semantic-theme-rules", store, { isCaseSensitive: true }));
   store.announce();
 
-  decorator = new TokenDecorator(() => resolver()?.registry, LANGUAGE_ID);
+  decorator = new TokenDecorator(() => resolver()?.registry, LANGUAGE_ID, (line) => output.appendLine(`[decorations] ${line}`));
   context.subscriptions.push(decorator);
 
   const language = registerLanguage(context, {
@@ -62,6 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("semanticThemeExtender.apply", () => apply(true).catch(report)),
     vscode.commands.registerCommand("semanticThemeExtender.remove", () => removeAll().catch(report)),
     vscode.commands.registerCommand("semanticThemeExtender.showResolved", showResolved),
+    vscode.commands.registerCommand("semanticThemeExtender.inspectToken", () => inspectToken().catch(report)),
     vscode.window.onDidChangeActiveColorTheme(() => schedule(true)),
     vscode.window.onDidChangeWindowState((s) => s.focused && store.checkForExternalChange()),
     vscode.extensions.onDidChange(() => schedule(true)),
@@ -129,10 +130,10 @@ async function openRules() {
   await vscode.window.showTextDocument(doc);
 }
 
-const PROJECT_TEMPLATE = `; Rules for this project only, on top of the global rules (Semantic Theme Extender: Open Rules).
-; Same language; everything here is drawn as decorations over the language server's tokens, in
-; this workspace folder only, so semantic selectors only: no UI colors or TextMate scopes.
-; Applied on save.
+const PROJECT_TEMPLATE = `; What tokens are in this project, as custom modifiers; applied on save, in this folder only.
+;   contains(text("__slots__") variable.classMember) class += slotted
+; How they look belongs in the global rules (Semantic Theme Extender: Open Rules), the same in
+; every project:   class.slotted = $struct
 
 `;
 
@@ -168,8 +169,9 @@ async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags
     const result = compile(parseRulesFile(Buffer.from(bytes).toString("utf8")), r, { project: true });
     output.appendLine(`\n== project rules ${uri.fsPath}`);
     result.log.forEach((l) => output.appendLine(l));
-    out.rules.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
-    out.tags.push(...result.tagRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
+    const file = vscode.workspace.asRelativePath(uri);
+    out.rules.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString(), file })));
+    out.tags.push(...result.tagRules.map((t) => ({ ...t, folder: folder.uri.toString(), file })));
   }
   return out;
 }
@@ -232,8 +234,8 @@ async function apply(verbose = false) {
   // Rules with more than a plain selector, and all project rules, are drawn over the language
   // server's tokens; project rules come last, so they win over equally specific global ones.
   const project = await projectRules(r);
-  const drawn: DrawRule[] = [...result.textRules, ...project.rules];
-  const tags: DrawTag[] = [...result.tagRules, ...project.tags];
+  const drawn: DrawRule[] = [...result.textRules.map((t) => ({ ...t, file: "global rules" })), ...project.rules];
+  const tags: DrawTag[] = [...result.tagRules.map((t) => ({ ...t, file: "global rules" })), ...project.tags];
   const textRules = JSON.stringify([drawn, tags]);
   if (textRules !== lastTextRules) {
     lastTextRules = textRules;
@@ -258,6 +260,20 @@ async function removeAll() {
   await writeSettings(before, strip(before, normalizeOwned(state.get(OWNED_KEY))));
   await state.update(OWNED_KEY, undefined);
   vscode.window.showInformationMessage("Semantic Theme Extender: removed all generated color rules.");
+}
+
+/** Writes what the extension knows about the token at the cursor to the output panel. */
+async function inspectToken() {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showInformationMessage("Put the cursor on a token in an editor first.");
+    return;
+  }
+  const pos = editor.selection.active;
+  const lines = await decorator.inspect(editor.document, pos);
+  output.appendLine(`\n== Token at ${vscode.workspace.asRelativePath(editor.document.uri)}:${pos.line + 1}:${pos.character + 1}`);
+  lines.forEach((l) => output.appendLine(l));
+  output.show(true);
 }
 
 function showResolved() {

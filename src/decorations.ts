@@ -7,12 +7,15 @@
 //
 // Custom modifiers (head += slotted) are given to a document's tokens first, rule by rule in file
 // order (global rules, then the project's), so later heads and every drawn rule can select them.
+// In a document on screen, a token whose definition is in another workspace file also takes over
+// the custom modifiers that definition got there, and contains() is answered for it there.
 
 import * as vscode from "vscode";
-import { globToRegExp, TokenCondition } from "./cfg";
+import { conditionText, globToRegExp, TokenCondition } from "./cfg";
 import { StyleValue, TagRule, TextRule } from "./engine";
 import { parseSelector, TokenRegistry } from "./theme";
 
+// Redraw this long after an edit; a document that just came into view is drawn right away.
 const REFRESH_MS = 400;
 // A language server may not have tokens right after a file opens; ask again a few times.
 const RETRY_MS = 1500;
@@ -20,6 +23,10 @@ const RETRIES = 4;
 // inherits(): how far up the type hierarchy to look, and how many types per file to ask about.
 const MAX_DEPTH = 12;
 const MAX_TYPES = 300;
+// Definitions asked for per document, to carry custom modifiers over from other files.
+const MAX_REFS = 300;
+// Language server requests sent at once.
+const PARALLEL = 16;
 // Token types that can name a type with a hierarchy.
 const TYPE_TOKENS = ["class", "struct", "interface", "enum", "type"];
 
@@ -38,20 +45,27 @@ type Condition =
   | { kind: "not"; operand: Condition }
   | { kind: "and" | "or"; left: Condition; right: Condition };
 
-/** A rule to draw; one with a folder (a URI string) only applies to documents inside it. */
+/**
+ * A rule to draw; one with a folder (a URI string) only applies to documents inside it. file names
+ * its rules file for Inspect Token.
+ */
 export interface DrawRule extends TextRule {
   folder?: string;
+  file: string;
 }
 
 /** Custom modifiers to give; likewise limited to a folder when it has one. */
 export interface DrawTag extends TagRule {
   folder?: string;
+  file: string;
 }
 
 interface CompiledTag {
   when: Condition;
   modifiers: string[];
   folder?: string;
+  /** Where the rule is, e.g. "global rules, line 12". */
+  source: string;
 }
 
 const inFolder = (folder: string | undefined, uri: vscode.Uri) => {
@@ -64,7 +78,12 @@ interface Compiled {
   style: StyleValue;
   specificity: number;
   folder?: string;
+  /** The head as written, and where the rule is: for Inspect Token. */
+  text: string;
+  source: string;
 }
+
+const sourceOf = (r: { file: string; line: number }) => `${r.file}, line ${r.line}`;
 
 interface Token {
   range: vscode.Range;
@@ -168,21 +187,44 @@ const needsSymbols = (c: Condition): boolean =>
   (c.kind === "not" && needsSymbols(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (needsSymbols(c.left) || needsSymbols(c.right)));
 
+const usesContains = (c: Condition): boolean =>
+  c.kind === "contains" ||
+  ((c.kind === "within" || c.kind === "inherits") && usesContains(c.inner)) ||
+  (c.kind === "not" && usesContains(c.operand)) ||
+  ((c.kind === "and" || c.kind === "or") && (usesContains(c.left) || usesContains(c.right)));
+
 type Loader = (uri: vscode.Uri) => Promise<DocData | undefined>;
+type Log = (line: string) => void;
+
+const fileName = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf("/") + 1);
+
+/** Runs f over items, a few at a time. */
+async function inBatches<T>(items: T[], f: (x: T) => Promise<void>) {
+  for (let i = 0; i < items.length; i += PARALLEL) await Promise.all(items.slice(i, i + PARALLEL).map(f));
+}
+
 
 /**
- * One document's tokens and symbols, and the conditions evaluated on them. contains() and within()
- * are answered from this document alone; inherits() asks the type hierarchy and evaluates its
- * condition on each base type's name token, in whatever file that base type lives (loaded through
- * the shared loader, so each file is analyzed once per version).
+ * One document's tokens and symbols, and the conditions evaluated on them. within() is answered from
+ * this document alone; contains() also for names defined in another file (once those are looked
+ * up), in that file; inherits() asks the type hierarchy and evaluates its condition on each base
+ * type's name token, in whatever file that base type lives (loaded through the shared loader, so
+ * each file is analyzed once per version).
  */
 class DocData {
   private owners = new Map<Condition, Set<string>>();
   private inherited = new Map<Condition, Promise<Set<string>>>();
   private ready = new Map<Condition, Set<string>>();
   private names = new Map<Sym, Token | undefined>();
+  /** Where each token's custom modifiers came from, for Inspect Token. */
+  private origins = new Map<Token, Map<string, string>>();
   private tagging?: Promise<void>;
   private taggingNow = false;
+  private importing?: Promise<void>;
+  /** Names used here and defined in another workspace file: their definitions' name tokens. */
+  private definitions = new Map<string, { data: DocData; token: Token }[]>();
+  /** True once definitions in other files are looked up. */
+  imported = false;
 
   constructor(
     readonly doc: vscode.TextDocument,
@@ -190,6 +232,11 @@ class DocData {
     private readonly symbols: Sym[],
     private readonly load: Loader,
     private readonly tags: CompiledTag[],
+    /** Every custom modifier some += assigns, in any folder: the ones worth carrying over. */
+    private readonly custom: Set<string>,
+    /** Some rule uses contains(), so definitions elsewhere are worth looking up even without modifiers. */
+    private readonly follow: boolean,
+    private readonly log: Log,
   ) {
     for (const s of symbols) this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
   }
@@ -210,13 +257,88 @@ class DocData {
       for (const tag of this.tags) {
         await this.prepare(tag.when);
         const hits = this.tokens.filter((t) => this.test(tag.when, t));
-        for (const t of hits) for (const m of tag.modifiers) if (!t.modifiers.includes(m)) t.modifiers.push(m);
+        for (const t of hits) this.give(t, tag.modifiers, tag.source);
         // Answers computed before these modifiers existed may be out of date now.
         this.owners.clear();
       }
     } finally {
       this.taggingNow = false;
     }
+  }
+
+  /**
+   * For a document on screen: tokens whose definition is in another workspace file take over the
+   * custom modifiers the definition got there (Slotted in class Child(Slotted), from base.py), matched
+   * by text like contains(), and contains() asks the definition's file about them. Then this
+   * document's own assignments run again, to build on both.
+   * Library files are left out; only the workspace's own files get project modifiers anyway.
+   * Types are also looked up in the type hierarchy: go to definition on Slotted() may answer with
+   * __init__, the hierarchy always with the class.
+   */
+  ensureImports(): Promise<void> {
+    return (this.importing ??= this.importTags().finally(() => (this.imported = true)));
+  }
+
+  private async importTags() {
+    await this.ensureTags();
+    if (!this.custom.size && !this.follow) return;
+    const start = Date.now();
+    const seen = new Set<string>();
+    const refs = this.tokens.filter((t) => !t.modifiers.includes("declaration") && !seen.has(t.text) && seen.add(t.text)).slice(0, MAX_REFS);
+    const found = new Map<string, Set<string>>();
+    const fromFile = new Map<string, string>();
+    const sources = new Map<string, string>();
+    await inBatches(refs, async (t) => {
+      const ask = <T>(command: string) =>
+        vscode.commands.executeCommand<T[]>(command, this.doc.uri, t.range.start).then(
+          (r) => r ?? [],
+          () => [] as T[],
+        );
+      const [definitions, types] = await Promise.all([
+        ask<vscode.Location | vscode.LocationLink>("vscode.executeDefinitionProvider"),
+        t.chain.some((c) => TYPE_TOKENS.includes(c)) ? ask<vscode.TypeHierarchyItem>("vscode.prepareTypeHierarchy") : [],
+      ]);
+      const targets = [
+        ...definitions.map((d) => ("targetUri" in d ? { uri: d.targetUri, range: d.targetSelectionRange ?? d.targetRange } : { uri: d.uri, range: d.range })),
+        ...types.map((i) => ({ uri: i.uri, range: i.selectionRange })),
+      ];
+      for (const { uri, range } of targets) {
+        if (uri.toString() === this.doc.uri.toString() || !vscode.workspace.getWorkspaceFolder(uri)) continue;
+        const data = await this.load(uri);
+        const name = data?.tokenAt(range);
+        if (!data || !name) continue;
+        this.definitions.set(t.text, [...(this.definitions.get(t.text) ?? []), { data, token: name }]);
+        for (const m of name.modifiers) {
+          if (!this.custom.has(m)) continue;
+          found.set(t.text, (found.get(t.text) ?? new Set()).add(m));
+          fromFile.set(t.text, `from the definition in ${vscode.workspace.asRelativePath(uri)}`);
+          sources.set(t.text, fileName(uri));
+        }
+      }
+    });
+    const summary = [...found].map(([text, mods]) => `${text} <- ${sources.get(text)}: ${[...mods].join(", ")}`);
+    this.log(
+      `${fileName(this.doc.uri)}: asked about ${refs.length} names in ${Date.now() - start} ms; ${this.definitions.size} defined in other files; ` +
+        `modifiers from there: ${summary.join("; ") || "none"}`,
+    );
+    if (!found.size && !this.definitions.size) return;
+    for (const t of this.tokens) this.give(t, [...(found.get(t.text) ?? [])], fromFile.get(t.text) ?? "");
+    this.owners.clear();
+    await this.applyTags();
+  }
+
+  private give(t: Token, modifiers: string[], origin: string) {
+    for (const m of modifiers) {
+      if (t.modifiers.includes(m)) continue;
+      t.modifiers.push(m);
+      const origins = this.origins.get(t) ?? new Map<string, string>();
+      this.origins.set(t, origins.set(m, origin));
+    }
+  }
+
+  /** Custom modifiers of a token and where each came from. */
+  originsOf(t: Token): Map<string, string> {
+    return this.origins.get(t) ?? new Map();
   }
 
   /** The token at the start of range, e.g. the name token of a symbol or a type hierarchy item. */
@@ -232,7 +354,12 @@ class DocData {
         if (!this.inherited.has(c)) this.inherited.set(c, this.computeInherits(c.inner));
         this.ready.set(c, await this.inherited.get(c)!);
         return;
-      case "contains":
+      case "contains": {
+        await this.prepare(c.inner);
+        const elsewhere = new Set([...this.definitions.values()].flatMap((list) => list.map((d) => d.data)));
+        for (const data of elsewhere) await data.prepare(c.inner);
+        return;
+      }
       case "within":
         return this.prepare(c.inner);
       case "not":
@@ -253,7 +380,7 @@ class DocData {
       case "selector":
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":
-        return this.ownersOf(c.inner).has(t.text);
+        return this.ownersOf(c.inner).has(t.text) || !!this.definitions.get(t.text)?.some((d) => d.data.ownersOf(c.inner).has(d.token.text));
       case "within":
         return this.symbols.some((s) => {
           if (!s.range.contains(t.range) || s.nameRange?.contains(t.range)) return false;
@@ -300,13 +427,13 @@ class DocData {
     const names = new Set<string>();
     const seen = new Set<string>();
     const candidates = this.tokens.filter((t) => t.chain.some((c) => TYPE_TOKENS.includes(c)) && !seen.has(t.text) && seen.add(t.text));
-    for (const t of candidates.slice(0, MAX_TYPES)) {
+    await inBatches(candidates.slice(0, MAX_TYPES), async (t) => {
       const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
         (r) => r ?? [],
         () => [],
       );
       if (await this.anyBase(items, inner)) names.add(t.text);
-    }
+    });
     return names;
   }
 
@@ -351,10 +478,13 @@ export class TokenDecorator implements vscode.Disposable {
   constructor(
     private readonly registry: () => TokenRegistry | undefined,
     private readonly skipLanguage: string,
+    private readonly log: Log = () => undefined,
   ) {
     this.subscriptions = [
-      vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach((e) => this.schedule(e.document))),
+      vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach((e) => this.schedule(e.document, 0, 0))),
       vscode.workspace.onDidChangeTextDocument((e) => {
+        // Output panels and the like change all the time; only edits to code matter.
+        if (!e.contentChanges.length || (e.document.uri.scheme !== "file" && e.document.uri.scheme !== "untitled")) return;
         // A base type may have changed: other documents' inherits() answers may be stale too.
         if (this.needsSymbols()) this.cache.clear();
         else this.cache.delete(e.document.uri.toString());
@@ -367,10 +497,48 @@ export class TokenDecorator implements vscode.Disposable {
   update(rules: DrawRule[], tags: DrawTag[] = []) {
     this.types.forEach((t) => t.dispose());
     this.types = rules.map((r) => vscode.window.createTextEditorDecorationType(decorationOptions(r.style)));
-    this.rules = rules.map((r) => ({ when: compileCondition(r.when), style: r.style, specificity: specificity(r.when), folder: r.folder }));
-    this.tags = tags.map((t) => ({ when: compileCondition(t.when), modifiers: t.modifiers, folder: t.folder }));
+    this.rules = rules.map((r) => ({
+      when: compileCondition(r.when),
+      style: r.style,
+      specificity: specificity(r.when),
+      folder: r.folder,
+      text: conditionText(r.when),
+      source: sourceOf(r),
+    }));
+    this.tags = tags.map((t) => ({ when: compileCondition(t.when), modifiers: t.modifiers, folder: t.folder, source: sourceOf(t) }));
     this.cache.clear();
-    vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document));
+    vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document, 0, 0));
+  }
+
+  /**
+   * What this extension knows about the token at pos: its type and modifiers (custom ones with their
+   * origin), the drawn rule that wins there and the others that match. Waits for cross-file lookups.
+   */
+  async inspect(doc: vscode.TextDocument, pos: vscode.Position): Promise<string[]> {
+    const data = await this.load(doc.uri);
+    if (!data) return ["No semantic tokens for this file: the language server hasn't provided any (yet)."];
+    await data.ensureImports();
+    const token = data.tokens.find((t) => t.range.contains(pos));
+    if (!token) return ["No semantic token at the cursor."];
+    const rules = this.rules.map((r, i) => ({ r, i })).filter(({ r }) => inFolder(r.folder, doc.uri));
+    for (const { r } of rules) await data.prepare(r.when);
+    // Most specific first; among equals the later rule, as drawn.
+    const matching = rules.filter(({ r }) => data.test(r.when, token)).sort((a, b) => b.r.specificity - a.r.specificity || b.i - a.i);
+
+    const origins = data.originsOf(token);
+    const [type, ...supers] = token.chain;
+    const lines = [
+      `'${token.text}'  ${type}${supers.length ? ` (a kind of ${supers.join(", ")})` : ""}, ${doc.languageId}`,
+      `  modifiers from the language server: ${token.modifiers.filter((m) => !origins.has(m)).join(", ") || "none"}`,
+    ];
+    for (const [m, origin] of origins) lines.push(`  custom modifier ${m}: ${origin}`);
+    if (!matching.length) {
+      lines.push("  drawn: nothing; its color comes from the theme and settings (Developer: Inspect Editor Tokens and Scopes)");
+    }
+    matching.forEach(({ r }, k) => {
+      lines.push(`  ${k === 0 ? "drawn:" : "also matches:"} ${r.text} = ${JSON.stringify(r.style)}  (${r.source})`);
+    });
+    return lines;
   }
 
   private schedule(doc: vscode.TextDocument, attempt = 0, delay = REFRESH_MS) {
@@ -414,6 +582,13 @@ export class TokenDecorator implements vscode.Disposable {
           break;
         }
       }
+      // Draw what this file says on its own now; modifiers from other files follow in a second pass.
+      if (!data.imported) {
+        data.ensureImports().then(
+          () => this.schedule(doc, 0, 0),
+          (e) => this.log(`${fileName(doc.uri)}: ${(e as Error)?.stack ?? e}`),
+        );
+      }
     }
     for (const editor of editors) {
       this.types.forEach((t, i) => editor.setDecorations(t, ranges[i]));
@@ -448,7 +623,9 @@ export class TokenDecorator implements vscode.Disposable {
     if (!legend || !tokens) return undefined;
     const symbols = this.needsSymbols() ? await this.symbols(doc) : [];
     const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
-    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags);
+    const custom = new Set(this.tags.flatMap((t) => t.modifiers));
+    const follow = this.rules.some((r) => usesContains(r.when)) || this.tags.some((t) => usesContains(t.when));
+    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags, custom, follow, this.log);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */
