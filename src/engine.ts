@@ -9,6 +9,10 @@
 // A UI color ID (editorBracketHighlight.foreground1) sets that color of the theme. Any other name
 // (string.quoted.docstring.python) is a TextMate scope and only produces that. ui / semantic /
 // textmate say the kind explicitly; an explicit semantic rule leaves the TextMate fallback alone.
+//
+// A project's rules file (.vscode/semantic-theme.str) only applies to its own window, so nothing
+// from it goes to settings, which all windows share: plain semantic selectors are drawn as
+// decorations like every other head, and UI colors and TextMate scopes are errors.
 
 import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, Rule, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
 import { planRule } from "./plan";
@@ -72,7 +76,12 @@ function toTextMate(value: StyleValue): TextMateSettings {
   return settings;
 }
 
-export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult {
+export interface CompileOptions {
+  /** A project's rules file: every rule is drawn as decorations, nothing goes to settings. */
+  project?: boolean;
+}
+
+export function compile(file: RulesFile, resolver: ThemeResolver, options: CompileOptions = {}): CompileResult {
   const flags = resolver.flags;
   const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
   const registry = resolver.registry;
@@ -202,7 +211,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
       else if (st.kind === "rule") {
         const plan = planRule(headOf(st), st.target, registry);
         result.problems.push(...plan.problems);
-        if (plan.names?.some((n) => registry.classify(n, st.target) === "ui") && hasStyle(st.value)) {
+        const notSemantic = options.project ? (plan.names ?? []).filter((n) => registry.classify(n, st.target) !== "semantic" && registry.classify(n, st.target)) : [];
+        if (notSemantic.length) {
+          result.problems.push({
+            range: st.selectorRange,
+            message: `Project rules only color semantic tokens; UI colors and TextMate scopes (${notSemantic.map((n) => `'${n}'`).join(", ")}) go in the global rules`,
+          });
+        } else if (plan.names?.some((n) => registry.classify(n, st.target) === "ui") && hasStyle(st.value)) {
           result.problems.push({ range: st.selectorRange, message: "UI colors take a color; style() only applies to tokens" });
         }
         checkValue(st.value);
@@ -266,20 +281,41 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
       }
       const plan = planRule(headOf(st), st.target, registry);
       if (plan.decoration) {
-        const when = stripCondition(plan.decoration);
-        const key = JSON.stringify(when);
-        const name = conditionText(when);
-        result.textRules = result.textRules.filter((r) => JSON.stringify(r.when) !== key);
-        if (value === NONE) {
-          result.log.push(`none  ${name} (line ${line})`);
-        } else {
-          result.textRules.push({ when, style: value });
-          result.log.push(`deco  ${name} = ${JSON.stringify(value)}  (line ${line})`);
-        }
+        addTextRule(stripCondition(plan.decoration), value, line);
         continue;
       }
-      for (const name of plan.names ?? []) applyName(name, st.target, value, override, line);
+      for (const name of plan.names ?? []) {
+        if (options.project) applyProjectName(name, st.target, value, override, line);
+        else applyName(name, st.target, value, override, line);
+      }
     }
+  };
+
+  // A later rule with the same head replaces an earlier one.
+  const addTextRule = (when: TokenCondition, value: StyleValue | typeof NONE, line: number) => {
+    const key = JSON.stringify(when);
+    const name = conditionText(when);
+    result.textRules = result.textRules.filter((r) => JSON.stringify(r.when) !== key);
+    if (value === NONE) {
+      result.log.push(`none  ${name} (line ${line})`);
+    } else {
+      result.textRules.push({ when, style: value });
+      result.log.push(`deco  ${name} = ${JSON.stringify(value)}  (line ${line})`);
+    }
+  };
+
+  // A plain name in a project's rules: a semantic selector, drawn; it fills gaps like a settings rule.
+  const applyProjectName = (selector: string, target: NameKind | undefined, value: StyleValue | typeof NONE, override: boolean, line: number) => {
+    if (registry.classify(selector, target) !== "semantic") {
+      result.log.push(`skip  ${selector} (line ${line}): project rules only color semantic tokens`);
+      return;
+    }
+    const own = override || value === NONE ? undefined : resolver.exactSemanticRule(selector);
+    if (own) {
+      result.log.push(`skip  ${selector} (line ${line}): theme already defines it (${own.source}); use override to replace it`);
+      return;
+    }
+    addTextRule({ kind: "selector", selector }, value, line);
   };
 
   // A rule for one plain name: a semantic selector (plus its TextMate fallback), a TextMate scope or a UI color.

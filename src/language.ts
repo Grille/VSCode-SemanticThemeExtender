@@ -14,6 +14,10 @@ export interface LanguageHost {
 }
 
 const STYLES = [...STYLE_NAMES];
+/** A project's rules, next to its settings; they apply to that workspace folder only. */
+export const PROJECT_FILE = ".vscode/semantic-theme.str";
+export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
+
 const KEYWORDS = new Set(["match", "style", "override", "language", "text", "contains", "within", "inherits", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
@@ -54,7 +58,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
     const hit = cache.get(doc);
     if (hit && hit.version === doc.version) return hit.result;
     const resolver = host.resolver();
-    const result = resolver && compile(parseRulesFile(doc.getText()), resolver);
+    const result = resolver && compile(parseRulesFile(doc.getText()), resolver, { project: isProjectFile(doc.uri) });
     cache.set(doc, { version: doc.version, result });
     return result;
   };

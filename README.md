@@ -109,9 +109,31 @@ The editor shows color swatches for every value as computed for the current them
 hover info for theme colors, completion for token types, UI colors and functions, and errors as
 you type.
 
+### Project rules
+
+Rules that only make sense for one codebase go in `.vscode/semantic-theme.str` in that
+workspace folder (**Open Project Rules** creates it), and can be committed with the project.
+They use the same language and apply on save, on top of the global rules, to files in that
+folder only; where a project rule and a global one are equally specific, the project rule wins.
+
+Since settings are shared by all windows, project rules never go there: every project rule,
+`struct = ...` included, is drawn as decorations over the language server's semantic tokens.
+That means semantic selectors only (no UI colors or TextMate scopes), and colors that show up
+once the language server has analyzed the file. Plain selectors still fill only what the theme
+leaves, unless in `override`. Project rules apply in trusted workspaces only.
+
+```
+@slots => contains(text("__slots__") variable.classMember)
+language(python) {
+  @slots class = style(struct, bold)
+  inherits(@slots) & !@slots = style(function, bold | italic)
+}
+```
+
 ## Commands
 
 - **Open Rules**: edit the rules file
+- **Open Project Rules**: edit (or create) the current workspace folder's `.vscode/semantic-theme.str`
 - **Show Resolved Theme Colors**: where each theme color comes from, and what was generated
 - **Apply Semantic Color Rules**: re-apply manually
 - **Reset Rules to Defaults**

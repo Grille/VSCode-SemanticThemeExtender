@@ -1,8 +1,8 @@
 import * as vscode from "vscode";
 import { DEFAULT_RULES, parseRulesFile } from "./cfg";
-import { TokenDecorator } from "./decorations";
+import { DrawRule, TokenDecorator } from "./decorations";
 import { compile } from "./engine";
-import { LANGUAGE_ID, registerLanguage } from "./language";
+import { LANGUAGE_ID, PROJECT_FILE, registerLanguage } from "./language";
 import { Customizations, normalizeOwned, SEMANTIC_SETTING, strip, TEXTMATE_SETTING, UI_SETTING, write } from "./settings";
 import { RULES_URI, RulesStore } from "./store";
 import { activeThemeId, loadTheme, STANDARD_TYPES, ThemeResolver, TokenRegistry } from "./theme";
@@ -44,11 +44,20 @@ export function activate(context: vscode.ExtensionContext) {
   };
 
   const poll = setInterval(() => store.checkForExternalChange(), SYNC_POLL_MS);
+  // Project rules apply when saved (or changed on disk), like the global rules.
+  const projectFiles = vscode.workspace.createFileSystemWatcher(`**/${PROJECT_FILE}`);
 
   context.subscriptions.push(
     output,
     store.onDidChangeText(() => schedule(false)),
     vscode.commands.registerCommand("semanticThemeExtender.openRules", openRules),
+    vscode.commands.registerCommand("semanticThemeExtender.openProjectRules", () => openProjectRules().catch(report)),
+    projectFiles,
+    projectFiles.onDidChange(() => schedule(false)),
+    projectFiles.onDidCreate(() => schedule(false)),
+    projectFiles.onDidDelete(() => schedule(false)),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => schedule(false)),
+    vscode.workspace.onDidGrantWorkspaceTrust(() => schedule(false)),
     vscode.commands.registerCommand("semanticThemeExtender.resetRules", resetRules),
     vscode.commands.registerCommand("semanticThemeExtender.apply", () => apply(true).catch(report)),
     vscode.commands.registerCommand("semanticThemeExtender.remove", () => removeAll().catch(report)),
@@ -120,6 +129,50 @@ async function openRules() {
   await vscode.window.showTextDocument(doc);
 }
 
+const PROJECT_TEMPLATE = `; Rules for this project only, on top of the global rules (Semantic Theme Extender: Open Rules).
+; Same language; everything here is drawn as decorations over the language server's tokens, in
+; this workspace folder only, so semantic selectors only: no UI colors or TextMate scopes.
+; Applied on save.
+
+`;
+
+/** Opens the project rules of a workspace folder, creating the file if there is none. */
+async function openProjectRules() {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  if (!folders.length) {
+    vscode.window.showInformationMessage("Project rules belong to a workspace folder; open a folder first.");
+    return;
+  }
+  const folder = folders.length === 1 ? folders[0] : await vscode.window.showWorkspaceFolderPick({ placeHolder: "Project rules for which folder?" });
+  if (!folder) return;
+  const uri = vscode.Uri.joinPath(folder.uri, PROJECT_FILE);
+  const exists = await vscode.workspace.fs.stat(uri).then(
+    () => true,
+    () => false,
+  );
+  if (!exists) await vscode.workspace.fs.writeFile(uri, Buffer.from(PROJECT_TEMPLATE, "utf8"));
+  await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri));
+}
+
+/** Each trusted workspace folder's project rules, as saved on disk. */
+async function projectRules(r: ThemeResolver): Promise<DrawRule[]> {
+  if (!vscode.workspace.isTrusted) return [];
+  const out: DrawRule[] = [];
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const uri = vscode.Uri.joinPath(folder.uri, PROJECT_FILE);
+    const bytes = await vscode.workspace.fs.readFile(uri).then(
+      (b) => b,
+      () => undefined,
+    );
+    if (!bytes) continue;
+    const result = compile(parseRulesFile(Buffer.from(bytes).toString("utf8")), r, { project: true });
+    output.appendLine(`\n== project rules ${uri.fsPath}`);
+    result.log.forEach((l) => output.appendLine(l));
+    out.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
+  }
+  return out;
+}
+
 async function resetRules() {
   const ok = await vscode.window.showWarningMessage(
     "Replace your Semantic Theme Extender rules with the defaults?",
@@ -165,12 +218,6 @@ async function apply(verbose = false) {
   if (!r) return;
   const result = compile(parseRulesFile(store.text), r);
   const { rules, textMate, ui, log } = result;
-  // Text-filtered rules aren't settings; they are drawn over the language server's tokens.
-  const textRules = JSON.stringify(result.textRules);
-  if (textRules !== lastTextRules) {
-    lastTextRules = textRules;
-    decorator.update(result.textRules);
-  }
   const section = `[${r.theme.id}]`;
 
   const before = currentSettings();
@@ -180,6 +227,15 @@ async function apply(verbose = false) {
 
   output.appendLine(`\n== ${new Date().toLocaleTimeString()} theme '${r.theme.id}' (${r.theme.file})`);
   log.forEach((l) => output.appendLine(l));
+
+  // Rules with more than a plain selector, and all project rules, are drawn over the language
+  // server's tokens; project rules come last, so they win over equally specific global ones.
+  const drawn: DrawRule[] = [...result.textRules, ...(await projectRules(r))];
+  const textRules = JSON.stringify(drawn);
+  if (textRules !== lastTextRules) {
+    lastTextRules = textRules;
+    decorator.update(drawn);
+  }
 
   // Store ownership first: if a write fails half way, the next apply can still clean up.
   if (JSON.stringify(state.get(OWNED_KEY)) !== JSON.stringify(next.owned)) {

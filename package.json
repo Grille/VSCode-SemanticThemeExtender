@@ -40,11 +40,22 @@
     "watch": "tsc -watch -p ./",
     "vscode:prepublish": "npm run compile"
   },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Project rules (.vscode/semantic-theme.str) are only applied in trusted workspaces."
+    }
+  },
   "contributes": {
     "commands": [
       {
         "command": "semanticThemeExtender.openRules",
         "title": "Open Rules",
+        "category": "Semantic Theme Extender"
+      },
+      {
+        "command": "semanticThemeExtender.openProjectRules",
+        "title": "Open Project Rules",
         "category": "Semantic Theme Extender"
       },
       {

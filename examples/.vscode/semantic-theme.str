@@ -1,0 +1,13 @@
+; Rules for this project only, on top of the global rules (Semantic Theme Extender: Open Rules).
+; Same language; everything here is drawn as decorations over the language server's tokens, in
+; this workspace folder only, so semantic selectors only: no UI colors or TextMate scopes.
+; Applied on save.
+
+@contains_slots => contains(text("__slots__") variable.classMember)
+@is_slots_class => @contains_slots & class
+
+language(python) {
+  @is_slots_class = style(struct, bold)
+  ; Subclasses of a slots class that don't declare __slots__ themselves get a __dict__ again.
+  inherits(@is_slots_class) & !@is_slots_class = style(function, bold | italic)
+}

@@ -2,7 +2,8 @@
 // contains(...) class, within(...), inherits(...), !, ...) are drawn over the language server's
 // semantic tokens. VS Code uses a single semantic token provider per document, so instead of
 // providing tokens this reads the existing ones, plus document symbols and the type hierarchy
-// where a rule needs them, and draws editor decorations over matches.
+// where a rule needs them, and draws editor decorations over matches. Rules from a project's rules
+// file only apply to documents inside that workspace folder.
 
 import * as vscode from "vscode";
 import { globToRegExp, TokenCondition } from "./cfg";
@@ -34,10 +35,16 @@ type Condition =
   | { kind: "not"; operand: Condition }
   | { kind: "and" | "or"; left: Condition; right: Condition };
 
+/** A rule to draw; one with a folder (a URI string) only applies to documents inside it. */
+export interface DrawRule extends TextRule {
+  folder?: string;
+}
+
 interface Compiled {
   when: Condition;
   style: StyleValue;
   specificity: number;
+  folder?: string;
 }
 
 interface Token {
@@ -309,10 +316,10 @@ export class TokenDecorator implements vscode.Disposable {
   }
 
   /** New rules (after a rules or theme change): rebuild decoration types and redraw. */
-  update(rules: TextRule[]) {
+  update(rules: DrawRule[]) {
     this.types.forEach((t) => t.dispose());
     this.types = rules.map((r) => vscode.window.createTextEditorDecorationType(decorationOptions(r.style)));
-    this.rules = rules.map((r) => ({ when: compileCondition(r.when), style: r.style, specificity: specificity(r.when) }));
+    this.rules = rules.map((r) => ({ when: compileCondition(r.when), style: r.style, specificity: specificity(r.when), folder: r.folder }));
     this.cache.clear();
     vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document));
   }
@@ -333,8 +340,13 @@ export class TokenDecorator implements vscode.Disposable {
   private async refresh(doc: vscode.TextDocument, attempt: number) {
     const editors = vscode.window.visibleTextEditors.filter((e) => e.document === doc);
     if (!editors.length) return;
-    // Least specific first, so the most specific matching rule is found from the end.
-    const order = this.rules.map((_, i) => i).sort((a, b) => this.rules[a].specificity - this.rules[b].specificity || a - b);
+    // This document's rules, least specific first, so the most specific match is found from the end.
+    const uri = doc.uri.toString();
+    const applies = (r: Compiled) => !r.folder || uri.startsWith(r.folder.endsWith("/") ? r.folder : `${r.folder}/`);
+    const order = this.rules
+      .map((_, i) => i)
+      .filter((i) => applies(this.rules[i]))
+      .sort((a, b) => this.rules[a].specificity - this.rules[b].specificity || a - b);
     const ranges: vscode.Range[][] = this.rules.map(() => []);
     if (order.length) {
       const version = doc.version;
@@ -344,7 +356,7 @@ export class TokenDecorator implements vscode.Disposable {
         if (attempt < RETRIES) this.schedule(doc, attempt + 1, RETRY_MS);
         return;
       }
-      for (const rule of this.rules) await data.prepare(rule.when);
+      for (const k of order) await data.prepare(this.rules[k].when);
       // The document changed while this was computed; a newer refresh is on its way.
       if (doc.version !== version) return;
       for (const token of data.tokens) {
