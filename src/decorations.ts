@@ -12,6 +12,7 @@
 // doc() matches the prose of a token's hover, signature() its code blocks; hovers are asked for in
 // that same second pass.
 
+import { AsyncLocalStorage } from "async_hooks";
 import * as vscode from "vscode";
 import { conditionText, patternToRegExp, TokenCondition } from "./cfg";
 import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
@@ -309,6 +310,12 @@ function hoverText(hovers: vscode.Hover[]): HoverText {
 }
 
 type Loader = (uri: vscode.Uri) => Promise<DocData | undefined>;
+
+// The documents the current chain of calls is giving custom modifiers to: inherits() and
+// definitions in other files load documents, which get theirs first.
+const taggingChain = new AsyncLocalStorage<Set<DocData>>();
+// How long to wait for a document another chain is tagging.
+const CROSS_WAIT_MS = 2000;
 type Log = (line: string) => void;
 
 const fileName = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf("/") + 1);
@@ -363,13 +370,20 @@ class DocData {
   }
 
   /**
-   * Gives the tokens their custom modifiers, once. A document already being tagged is used as it
-   * is: inherits() may come back to it (a base type in the same file, or files whose types derive
-   * from each other's), and waiting there would never end.
+   * Gives the tokens their custom modifiers, once. A document this same chain of calls is already
+   * tagging is used as it is: inherits() may come back to it (a base type in the same file, or files
+   * whose types derive from each other's), and waiting there would never end. One that a parallel
+   * chain is tagging (two types walking up to the same base) is waited for, but not forever, in case
+   * that chain in turn waits for this one.
    */
   ensureTags(): Promise<void> {
-    if (this.taggingNow) return Promise.resolve();
-    return (this.tagging ??= this.applyTags());
+    if (taggingChain.getStore()?.has(this)) return Promise.resolve();
+    const elsewhere = this.taggingNow;
+    if (!this.tagging) {
+      const chain = new Set(taggingChain.getStore()).add(this);
+      this.tagging = taggingChain.run(chain, () => this.applyTags());
+    }
+    return elsewhere ? Promise.race([this.tagging, new Promise<void>((r) => setTimeout(r, CROSS_WAIT_MS))]) : this.tagging;
   }
 
   private async applyTags() {

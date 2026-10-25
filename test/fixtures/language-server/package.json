@@ -1,0 +1,20 @@
+{
+  "name": "test-language-server",
+  "description": "Plays Pylance's contributions: its own token types and modifiers, and their TextMate scopes.",
+  "contributes": {
+    "semanticTokenTypes": [
+      { "id": "selfParameter", "superType": "parameter" },
+      { "id": "clsParameter", "superType": "parameter" }
+    ],
+    "semanticTokenModifiers": [{ "id": "classMember" }, { "id": "builtin" }],
+    "semanticTokenScopes": [
+      {
+        "language": "python",
+        "scopes": {
+          "selfParameter": ["variable.parameter.function.language.special.self.python"],
+          "clsParameter": ["variable.parameter.function.language.special.cls.python"]
+        }
+      }
+    ]
+  }
+}

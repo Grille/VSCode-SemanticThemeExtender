@@ -1,0 +1,17 @@
+// Modeled on Dark Modern: no semantic rule for struct, a TextMate rule for keyword.control.
+{
+  "semanticHighlighting": true,
+  "colors": { "editor.background": "#1F1F1F", "editor.foreground": "#CCCCCC", "editorCursor.foreground": "#AEAFAD" },
+  "semanticTokenColors": { "enumMember": "#4FC1FF" },
+  "tokenColors": [
+    { "scope": "comment", "settings": { "foreground": "#6A9955" } },
+    { "scope": "string", "settings": { "foreground": "#CE9178" } },
+    { "scope": "keyword", "settings": { "foreground": "#569CD6" } },
+    { "scope": "keyword.control", "settings": { "foreground": "#C586C0" } },
+    { "scope": "variable", "settings": { "foreground": "#9CDCFE" } },
+    { "scope": "variable.language", "settings": { "foreground": "#569CD6" } },
+    { "scope": ["entity.name.type", "entity.name.class", "support.class"], "settings": { "foreground": "#4EC9B0" } },
+    { "scope": "entity.name.function", "settings": { "foreground": "#DCDCAA" } },
+    { "scope": "constant.numeric", "settings": { "foreground": "#B5CEA8" } }
+  ]
+}

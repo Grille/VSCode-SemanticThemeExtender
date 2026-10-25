@@ -94,6 +94,12 @@ function adjustLch(c: Color, f: (lch: Lch) => Lch): Color {
   return lchToRgb(f(toLch(rgbToLab(c))), c.a);
 }
 
+/** How different two colors look: their distance in OKLab. */
+export function distance(x: Color, y: Color): number {
+  const [a, b] = [rgbToLab(x), rgbToLab(y)];
+  return Math.hypot(a.L - b.L, a.a - b.a, a.b - b.b);
+}
+
 /** Perceptual lightness, 0 (black) to 1 (white). */
 export const lightness = (c: Color) => rgbToLab(c).L;
 

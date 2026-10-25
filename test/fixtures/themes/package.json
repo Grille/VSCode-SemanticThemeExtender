@@ -1,0 +1,10 @@
+{
+  "name": "test-themes",
+  "contributes": {
+    "themes": [
+      { "label": "Test Dark", "uiTheme": "vs-dark", "path": "./dark.json" },
+      { "label": "Test Light", "uiTheme": "vs", "path": "./light.json" }
+    ],
+    "languages": [{ "id": "python" }, { "id": "csharp" }, { "id": "typescript" }]
+  }
+}

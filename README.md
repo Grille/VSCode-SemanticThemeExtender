@@ -182,6 +182,16 @@ npm run compile
 
 Press <kbd>F5</kbd> to launch an Extension Development Host.
 
+```sh
+npm test
+```
+
+runs the tests in [test/](test/) with Node's test runner, against a fake `vscode` module
+([test/fake-vscode.ts](test/fake-vscode.ts)): two small themes and a scripted language server
+(tokens, symbols, hovers, definitions, type hierarchy) over in-memory files, so results don't
+depend on what is installed. What real language servers return (Pylance, C#) is still only
+checked by hand in the Extension Development Host.
+
 The list of UI color IDs and their defaults ([src/uiColors.ts](src/uiColors.ts)) is
 generated from VS Code's own code, since VS Code has no API for it:
 
