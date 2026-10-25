@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { DEFAULT_RULES, parseRulesFile } from "./cfg";
-import { DrawRule, TokenDecorator } from "./decorations";
+import { DrawRule, DrawTag, TokenDecorator } from "./decorations";
 import { compile } from "./engine";
 import { LANGUAGE_ID, PROJECT_FILE, registerLanguage } from "./language";
 import { Customizations, normalizeOwned, SEMANTIC_SETTING, strip, TEXTMATE_SETTING, UI_SETTING, write } from "./settings";
@@ -155,9 +155,9 @@ async function openProjectRules() {
 }
 
 /** Each trusted workspace folder's project rules, as saved on disk. */
-async function projectRules(r: ThemeResolver): Promise<DrawRule[]> {
-  if (!vscode.workspace.isTrusted) return [];
-  const out: DrawRule[] = [];
+async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags: DrawTag[] }> {
+  const out = { rules: [] as DrawRule[], tags: [] as DrawTag[] };
+  if (!vscode.workspace.isTrusted) return out;
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const uri = vscode.Uri.joinPath(folder.uri, PROJECT_FILE);
     const bytes = await vscode.workspace.fs.readFile(uri).then(
@@ -168,7 +168,8 @@ async function projectRules(r: ThemeResolver): Promise<DrawRule[]> {
     const result = compile(parseRulesFile(Buffer.from(bytes).toString("utf8")), r, { project: true });
     output.appendLine(`\n== project rules ${uri.fsPath}`);
     result.log.forEach((l) => output.appendLine(l));
-    out.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
+    out.rules.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
+    out.tags.push(...result.tagRules.map((t) => ({ ...t, folder: folder.uri.toString() })));
   }
   return out;
 }
@@ -230,11 +231,13 @@ async function apply(verbose = false) {
 
   // Rules with more than a plain selector, and all project rules, are drawn over the language
   // server's tokens; project rules come last, so they win over equally specific global ones.
-  const drawn: DrawRule[] = [...result.textRules, ...(await projectRules(r))];
-  const textRules = JSON.stringify(drawn);
+  const project = await projectRules(r);
+  const drawn: DrawRule[] = [...result.textRules, ...project.rules];
+  const tags: DrawTag[] = [...result.tagRules, ...project.tags];
+  const textRules = JSON.stringify([drawn, tags]);
   if (textRules !== lastTextRules) {
     lastTextRules = textRules;
-    decorator.update(drawn);
+    decorator.update(drawn, tags);
   }
 
   // Store ownership first: if a write fails half way, the next apply can still clean up.

@@ -70,6 +70,7 @@ override ui {
 | `within(class text("Ctx")) method` | Only tokens inside a symbol whose name token matches: here methods of a class named `Ctx`. Same file, from document symbols |
 | `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance, C# and TypeScript provide it), so it appears a little later |
 | `@slots => contains(text("__slots__") variable.classMember)` | A named selector expression, used as `@slots` in any head: `@slots class = …`, `inherits(@slots) class`, `@slots & !contains(…) class`, or alone: `@slots = …`. Top level only, assigned once, usable before its declaration |
+| `contains(…) class += slotted` | Custom modifiers: tokens the head matches get `slotted`, as if the language server had reported it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in another rules file. Assignments run in order, global rules first, then the project's. Modifiers no language server defines count as custom ones, except as plain names after `string`, `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write `*.foo`, `semantic variable.foo`, or use it in an expression. Rules with custom modifiers are drawn as decorations; one that nothing in the same file assigns gets a hint, in case it's a typo |
 | `head { rules }` | A block: its head and each rule's head must all hold, e.g. `language(python) { … }`, `contains(…) & !text("_*") { … }` |
 | Decorations | Heads that aren't plain selectors (`text`, `contains`, `!`, two different types, …) are drawn as editor decorations over the language server's semantic tokens instead of written to settings. They always win over the theme and appear shortly after the language server has analyzed the file. Where several match a token, the most specific wins, like VS Code ranks semantic rules: a token type over `*`, more modifiers, a language, then an exact text over a wildcard; file order only between equals |
 | `ui name`, `semantic name`, `textmate name`, `ui { rules }` | Say what kind of name it is instead of inferring it (token type, then UI color ID, then TextMate scope). The name must fit the kind. `semantic` writes only the semantic rule, without the TextMate fallback; `textmate` takes the name literally as a scope. Combines with `override`, also in values: `ui editor.background` |
@@ -122,12 +123,19 @@ That means semantic selectors only (no UI colors or TextMate scopes), and colors
 once the language server has analyzed the file. Plain selectors still fill only what the theme
 leaves, unless in `override`. Project rules apply in trusted workspaces only.
 
+Custom modifiers split the work: a project file says what tokens are, the global rules (or the
+project file itself) say how that looks, the same in every project.
+
 ```
-@slots => contains(text("__slots__") variable.classMember)
+; .vscode/semantic-theme.str
 language(python) {
-  @slots class = style(struct, bold)
-  inherits(@slots) & !@slots = style(function, bold | italic)
+  contains(text("__slots__") variable.classMember) class += slotted
+  inherits(class.slotted) & !class.slotted += leaky
 }
+
+; global rules
+class.slotted = style(struct, bold)
+class.leaky = style(function, bold | italic)
 ```
 
 ## Commands

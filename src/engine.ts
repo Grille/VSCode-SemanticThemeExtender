@@ -14,7 +14,7 @@
 // from it goes to settings, which all windows share: plain semantic selectors are drawn as
 // decorations like every other head, and UI colors and TextMate scopes are errors.
 
-import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, Rule, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
+import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
 import { planRule } from "./plan";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
@@ -38,6 +38,12 @@ export interface TextRule {
   style: StyleValue;
 }
 
+/** head += slotted: custom modifiers given to matching tokens before any rule is drawn. */
+export interface TagRule {
+  when: TokenCondition;
+  modifiers: string[];
+}
+
 
 
 export interface ColorSpan {
@@ -55,6 +61,8 @@ export interface CompileResult {
   ui: Record<string, string>;
   /** Text-filtered rules in file order; later ones win where several match a token. */
   textRules: TextRule[];
+  /** Custom modifier assignments for the active theme, in file order. */
+  tagRules: TagRule[];
   log: string[];
   problems: Problem[];
   colors: ColorSpan[];
@@ -83,7 +91,7 @@ export interface CompileOptions {
 
 export function compile(file: RulesFile, resolver: ThemeResolver, options: CompileOptions = {}): CompileResult {
   const flags = resolver.flags;
-  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
+  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], tagRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
   const registry = resolver.registry;
   const failed = new Set<string>();
   const resolving = new Set<string>();
@@ -203,13 +211,31 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
   const hasStyle = (v: Value): boolean => v.kind === "style" || (v.kind === "match" && v.arms.some((a) => hasStyle(a.body)));
 
   // The rule's head together with the heads of enclosing blocks.
-  const headOf = (st: Rule): Cond => (st.when ? { kind: "and", left: st.when, right: st.head, range: st.head.range } : st.head);
+  const headOf = (st: { head: Cond; when?: Cond }): Cond => (st.when ? { kind: "and", left: st.when, right: st.head, range: st.head.range } : st.head);
+
+  // Custom modifiers this file assigns, so using them doesn't get the might-be-a-typo hint.
+  const assigned = new Set<string>();
+  const collect = (stmts: Stmt[]) => {
+    for (const st of stmts) {
+      if (st.kind === "tag") st.modifiers.forEach((m) => assigned.add(m));
+      else if (st.kind === "when" || st.kind === "override" || st.kind === "target") collect(st.body);
+      else if (st.kind === "block") st.arms.forEach((a) => collect(a.body));
+    }
+  };
+  collect(file.stmts);
 
   const check = (stmts: Stmt[]) => {
     for (const st of stmts) {
       if (st.kind === "var") checkVariable(st);
-      else if (st.kind === "rule") {
-        const plan = planRule(headOf(st), st.target, registry);
+      else if (st.kind === "tag") {
+        // Only semantic tokens have modifiers; checked like the head of a drawn rule.
+        if (st.target && st.target !== "semantic") {
+          result.problems.push({ range: st.selectorRange, message: "Modifiers can only be added to semantic tokens" });
+        } else {
+          result.problems.push(...planRule(headOf(st), "semantic", registry, assigned).problems);
+        }
+      } else if (st.kind === "rule") {
+        const plan = planRule(headOf(st), st.target, registry, assigned);
         result.problems.push(...plan.problems);
         const notSemantic = options.project ? (plan.names ?? []).filter((n) => registry.classify(n, st.target) !== "semantic" && registry.classify(n, st.target)) : [];
         if (notSemantic.length) {
@@ -263,6 +289,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
       }
       if (st.kind === "target" || st.kind === "when") {
         apply(st.body, override);
+        continue;
+      }
+      if (st.kind === "tag") {
+        if (st.target && st.target !== "semantic") continue;
+        const when = stripCondition(headOf(st));
+        result.tagRules.push({ when, modifiers: st.modifiers });
+        result.log.push(`tag   ${conditionText(when)} += ${st.modifiers.join(", ")}  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }
       if (st.kind !== "rule") continue;
@@ -376,7 +409,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
     return !seen.has(key) && !!seen.add(key);
   });
   for (const p of result.problems) {
-    if (!p.warning) result.log.push(`error line ${p.range.start.line + 1}: ${p.message}`);
+    if (!p.warning && !p.hint) result.log.push(`error line ${p.range.start.line + 1}: ${p.message}`);
   }
   return result;
 }

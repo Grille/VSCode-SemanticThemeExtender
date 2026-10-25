@@ -2,7 +2,7 @@
 // head is expanded into an OR of ANDs: if every AND part is a positive selector (one token type,
 // modifiers, at most one language), the rule becomes one settings rule per part; struct | enum and
 // language(python) selfParameter work that way. Anything else (text, contains, within, inherits, !,
-// two different types) is drawn as decorations over the language server's tokens.
+// two different types, custom modifiers) is drawn as decorations over the language server's tokens.
 
 import { Cond, NameKind, Problem } from "./cfg";
 import { parseSelector, TokenRegistry } from "./theme";
@@ -90,8 +90,13 @@ function atoms(c: Cond, out: Cond[] = []): Cond[] {
   return out;
 }
 
-export function planRule(head: Cond, target: NameKind | undefined, registry: TokenRegistry): Plan {
+/**
+ * assigned: custom modifiers some += in the same file assigns; others get a hint, since they may
+ * just as well be typos as come from another rules file.
+ */
+export function planRule(head: Cond, target: NameKind | undefined, registry: TokenRegistry, assigned: Set<string> = new Set()): Plan {
   const problems: Problem[] = [];
+  const custom = (selector: string) => (registry.isSemantic(selector, true) ? registry.customModifiers(selector) : []);
 
   for (const a of atoms(head)) {
     if (a.kind !== "language") continue;
@@ -103,7 +108,11 @@ export function planRule(head: Cond, target: NameKind | undefined, registry: Tok
 
   // A plain name, or several joined by |: any kind of name, inferred or explicit.
   const parts = expand(head);
-  const plain = parts?.every((p) => p.length === 1 && !p[0].negated && p[0].c.kind === "selector");
+  // Settings rules can't match custom modifiers; those are drawn.
+  const plain = parts?.every((p) => {
+    const c = p[0].c;
+    return p.length === 1 && !p[0].negated && c.kind === "selector" && !(registry.classify(c.selector, target) === "semantic" && custom(c.selector).length);
+  });
   if (parts && plain) {
     const names = parts.map((p) => (p[0].c as Extract<Cond, { kind: "selector" }>).selector);
     for (const p of parts) {
@@ -134,8 +143,13 @@ export function planRule(head: Cond, target: NameKind | undefined, registry: Tok
   }
   for (const a of atoms(head)) {
     if (a.kind !== "selector" || a.selector === "*") continue;
-    const kind = registry.classify(a.selector);
-    if (kind === "semantic") continue;
+    const kind = registry.isSemantic(a.selector, true) ? "semantic" : registry.classify(a.selector);
+    if (kind === "semantic") {
+      for (const m of custom(a.selector).filter((m) => !assigned.has(m))) {
+        problems.push({ range: a.range, message: `'${m}' is no modifier of any language server; as a custom modifier it only matches tokens a += rule gives it`, hint: true });
+      }
+      continue;
+    }
     valid = false;
     problems.push({
       range: a.range,
@@ -150,7 +164,7 @@ export function planRule(head: Cond, target: NameKind | undefined, registry: Tok
     let never = false;
     for (const part of parts) {
       const s = selectorFor(part, registry);
-      if (s === undefined) {
+      if (s === undefined || (s !== "never" && custom(s).length)) {
         representable = false;
         break;
       }

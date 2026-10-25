@@ -13,6 +13,7 @@
 - Rule heads are selector expressions: `struct | enum`, `language(python) selfParameter`, `text(...)`, `contains(...)`, combined with `&` (or side by side), `|`, `!` and parentheses; plain selectors still go to settings, everything else is drawn as decorations.
 - `contains(...)`: color classes (or other symbols) by what they contain, e.g. classes defining `__slots__`.
 - `within(...)`: tokens inside a matching symbol; `inherits(...)`: types with a matching base type, across files, via the type hierarchy.
+- Custom modifiers: `head += slotted` gives matching tokens a modifier any rule can select (`class.slotted`), across rules files.
 - Project rules in `.vscode/semantic-theme.str`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
 - `@name => head` names a selector expression for reuse in heads as `@name`.
 - `text()` and `contains()` conditions combine with `&`, `|`, `!` and parentheses.

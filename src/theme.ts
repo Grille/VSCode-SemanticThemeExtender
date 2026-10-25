@@ -71,6 +71,9 @@ const STANDARD_MODIFIERS = ["declaration", "definition", "readonly", "static", "
 
 /** Top-level TextMate scopes that are not semantic token types, so they are valid without a dot. */
 const TEXTMATE_ROOTS = new Set(["constant", "entity", "invalid", "markup", "meta", "punctuation", "storage", "support", "source", "text"]);
+// Token types that TextMate scopes also start with: as plain names, string.quoted stays a scope
+// rather than a string with the custom modifier "quoted".
+const SHARED_ROOTS = new Set(["string", "comment", "keyword", "variable"]);
 
 export const STANDARD_TYPES = Object.keys(STANDARD_SCOPES);
 
@@ -202,10 +205,21 @@ export class TokenRegistry {
     }
   }
 
-  /** A semantic selector is a known token type (or *) followed only by known modifiers. */
-  isSemantic(selector: string): boolean {
+  /**
+   * A semantic selector is a known token type (or *) followed by modifiers. Modifiers no language
+   * server defines are custom ones, assigned with +=; as a plain name after a type that TextMate
+   * scopes also start with (variable.foo) that reads as a scope instead, unless inExpression
+   * (inside an expression, after semantic, or in a += head, where only semantic selectors stand).
+   */
+  isSemantic(selector: string, inExpression = false): boolean {
     const { type, modifiers } = parseSelector(selector);
-    return (type === "*" || this.isKnown(type)) && modifiers.every((m) => this.modifiers.has(m));
+    if (type !== "*" && !this.isKnown(type)) return false;
+    return inExpression || !SHARED_ROOTS.has(type) || modifiers.every((m) => this.modifiers.has(m));
+  }
+
+  /** The selector's modifiers that no language server defines. */
+  customModifiers(selector: string): string[] {
+    return parseSelector(selector).modifiers.filter((m) => !this.modifiers.has(m));
   }
 
   /**
@@ -223,7 +237,7 @@ export class TokenRegistry {
   }
 
   private fits(name: string, kind: "semantic" | "ui") {
-    return kind === "ui" ? this.uiColors.has(name) : this.isSemantic(name);
+    return kind === "ui" ? this.uiColors.has(name) : this.isSemantic(name, true);
   }
 
   /** Why classify found nothing; modifiers alone are a common slip. */

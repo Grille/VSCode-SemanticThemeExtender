@@ -2,6 +2,8 @@
 //
 //   ; comment
 //   $name = color                      variable: top level only, assigned once, usable anywhere
+//   head += slotted, other             custom modifiers: matching tokens get them, as if the language
+//                                      server had reported them; class.slotted selects them anywhere
 //   @name => head                      a named selector expression, used as @name in heads:
 //                                      @slots => contains(text("__slots__") variable.classMember)
 //                                      @slots class = ...; top level only, assigned once, usable anywhere
@@ -43,6 +45,8 @@ export interface Problem {
   range: Range;
   message: string;
   warning?: boolean;
+  /** Shown faintly; for things that are often fine. */
+  hint?: boolean;
 }
 
 export type Subject = "type" | "theme";
@@ -111,6 +115,18 @@ export interface Rule {
   /** The heads of enclosing blocks; they and the rule's own head must all hold. */
   when?: Cond;
   value: Value;
+}
+
+/** head += slotted: custom modifiers for the tokens the head matches. */
+export interface TagRule {
+  kind: "tag";
+  head: Cond;
+  /** The head as text, for messages. */
+  selector: string;
+  selectorRange: Range;
+  target?: NameKind;
+  when?: Cond;
+  modifiers: string[];
 }
 
 export interface Override {
@@ -217,7 +233,7 @@ export interface Block {
   range: Range;
 }
 
-export type Stmt = VarDecl | ExpressionDecl | Rule | Block | Override | Target | WhenBlock;
+export type Stmt = VarDecl | ExpressionDecl | Rule | TagRule | Block | Override | Target | WhenBlock;
 
 export interface RulesFile {
   stmts: Stmt[];
@@ -298,7 +314,7 @@ class ParseError extends Error {
 }
 
 const TOKEN_RE =
-  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|[=(),!|&{}*])/y;
+  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|\+=|[=(),!|&{}*])/y;
 
 function tokenize(text: string, problems: Problem[]): Token[] {
   const tokens: Token[] = [];
@@ -820,7 +836,20 @@ export function parseRulesFile(text: string): RulesFile {
         next();
         return { kind: "rule", head, selector: conditionText(stripCondition(head)), selectorRange: head.range, target: target?.kind, when, value: parseValue() };
       }
-      return fail(`Expected '=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
+      if (isPunct(n, "+=")) {
+        next();
+        const modifiers: string[] = [];
+        do {
+          const m = peek();
+          if (m?.type !== "ident" || !sameLine(tokens[i - 1], m) || !/^[A-Za-z_][\w-]*$/.test(m.text)) {
+            fail("Expected a modifier name like slotted", m && sameLine(tokens[i - 1], m) ? m : tokens[i - 1]);
+          }
+          next();
+          modifiers.push(m.text);
+        } while (isPunct(peek(), ",") && next());
+        return { kind: "tag", head, selector: conditionText(stripCondition(head)), selectorRange: head.range, target: target?.kind, when, modifiers };
+      }
+      return fail(`Expected '=' or '+=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
     }
     return fail("Expected a rule (selector = value), a variable ($name = value), an expression (@name => head), a match, or an override / ui / semantic / textmate block");
   }
@@ -939,7 +968,8 @@ export function parseRulesFile(text: string): RulesFile {
   function resolveAll(stmts: Stmt[]): Stmt[] {
     return stmts.flatMap((st): Stmt[] => {
       switch (st.kind) {
-        case "rule": {
+        case "rule":
+        case "tag": {
           const head = resolve(st.head);
           const when = st.when && resolve(st.when);
           return head && (!st.when || when) ? [{ ...st, head, when }] : [];
@@ -988,6 +1018,8 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;                            semantic struct = ... (no TextMate fallback), ui { rules }, ui editor.background
 ;   override rule            also replaces the theme's own color; override { rules } for several
 ;   $name = color            variable: top level, assigned once, use as $name
+;   head += slotted          custom modifiers for matching tokens; class.slotted = ... colors them,
+;                            in any rules file (variable, string, comment, keyword: *.slotted)
 ;   @name => head            a named selector expression, used in heads: @name class = ...
 ;
 ;   class, function, ...     the active theme's color for a semantic token type

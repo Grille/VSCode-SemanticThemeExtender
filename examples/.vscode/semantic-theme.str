@@ -3,11 +3,15 @@
 ; this workspace folder only, so semantic selectors only: no UI colors or TextMate scopes.
 ; Applied on save.
 
+; What things are: custom modifiers, selectable as class.slotted here and in the global rules.
 @contains_slots => contains(text("__slots__") variable.classMember)
-@is_slots_class => @contains_slots & class
 
 language(python) {
-  @is_slots_class = style(struct, bold)
-  ; Subclasses of a slots class that don't declare __slots__ themselves get a __dict__ again.
-  inherits(@is_slots_class) & !@is_slots_class = style(function, bold | italic)
+  @contains_slots class += slotted
+  ; Subclasses of a slotted class that don't declare __slots__ themselves get a __dict__ again.
+  inherits(class.slotted) & !class.slotted += leaky
 }
+
+; How they look; this part could just as well live in the global rules.
+class.slotted = style(struct, bold)
+class.leaky = style(function, bold | italic)

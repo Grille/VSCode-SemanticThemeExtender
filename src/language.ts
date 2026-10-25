@@ -103,7 +103,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
         const d = new vscode.Diagnostic(
           toVsRange(p.range),
           p.message,
-          p.warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
+          p.hint ? vscode.DiagnosticSeverity.Hint : p.warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
         );
         d.source = LANGUAGE_ID;
         return d;

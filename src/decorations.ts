@@ -4,10 +4,13 @@
 // providing tokens this reads the existing ones, plus document symbols and the type hierarchy
 // where a rule needs them, and draws editor decorations over matches. Rules from a project's rules
 // file only apply to documents inside that workspace folder.
+//
+// Custom modifiers (head += slotted) are given to a document's tokens first, rule by rule in file
+// order (global rules, then the project's), so later heads and every drawn rule can select them.
 
 import * as vscode from "vscode";
 import { globToRegExp, TokenCondition } from "./cfg";
-import { StyleValue, TextRule } from "./engine";
+import { StyleValue, TagRule, TextRule } from "./engine";
 import { parseSelector, TokenRegistry } from "./theme";
 
 const REFRESH_MS = 400;
@@ -39,6 +42,22 @@ type Condition =
 export interface DrawRule extends TextRule {
   folder?: string;
 }
+
+/** Custom modifiers to give; likewise limited to a folder when it has one. */
+export interface DrawTag extends TagRule {
+  folder?: string;
+}
+
+interface CompiledTag {
+  when: Condition;
+  modifiers: string[];
+  folder?: string;
+}
+
+const inFolder = (folder: string | undefined, uri: vscode.Uri) => {
+  if (!folder) return true;
+  return uri.toString().startsWith(folder.endsWith("/") ? folder : `${folder}/`);
+};
 
 interface Compiled {
   when: Condition;
@@ -162,14 +181,42 @@ class DocData {
   private inherited = new Map<Condition, Promise<Set<string>>>();
   private ready = new Map<Condition, Set<string>>();
   private names = new Map<Sym, Token | undefined>();
+  private tagging?: Promise<void>;
+  private taggingNow = false;
 
   constructor(
     readonly doc: vscode.TextDocument,
     readonly tokens: Token[],
     private readonly symbols: Sym[],
     private readonly load: Loader,
+    private readonly tags: CompiledTag[],
   ) {
     for (const s of symbols) this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
+  }
+
+  /**
+   * Gives the tokens their custom modifiers, once. A document already being tagged is used as it
+   * is: inherits() may come back to it (a base type in the same file, or files whose types derive
+   * from each other's), and waiting there would never end.
+   */
+  ensureTags(): Promise<void> {
+    if (this.taggingNow) return Promise.resolve();
+    return (this.tagging ??= this.applyTags());
+  }
+
+  private async applyTags() {
+    this.taggingNow = true;
+    try {
+      for (const tag of this.tags) {
+        await this.prepare(tag.when);
+        const hits = this.tokens.filter((t) => this.test(tag.when, t));
+        for (const t of hits) for (const m of tag.modifiers) if (!t.modifiers.includes(m)) t.modifiers.push(m);
+        // Answers computed before these modifiers existed may be out of date now.
+        this.owners.clear();
+      }
+    } finally {
+      this.taggingNow = false;
+    }
   }
 
   /** The token at the start of range, e.g. the name token of a symbol or a type hierarchy item. */
@@ -294,6 +341,7 @@ class DocData {
 
 export class TokenDecorator implements vscode.Disposable {
   private rules: Compiled[] = [];
+  private tags: CompiledTag[] = [];
   private types: vscode.TextEditorDecorationType[] = [];
   private timers = new Map<string, NodeJS.Timeout>();
   /** Analyzed documents by URI, valid for one document version. */
@@ -308,7 +356,7 @@ export class TokenDecorator implements vscode.Disposable {
       vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach((e) => this.schedule(e.document))),
       vscode.workspace.onDidChangeTextDocument((e) => {
         // A base type may have changed: other documents' inherits() answers may be stale too.
-        if (this.rules.some((r) => needsSymbols(r.when))) this.cache.clear();
+        if (this.needsSymbols()) this.cache.clear();
         else this.cache.delete(e.document.uri.toString());
         this.schedule(e.document);
       }),
@@ -316,10 +364,11 @@ export class TokenDecorator implements vscode.Disposable {
   }
 
   /** New rules (after a rules or theme change): rebuild decoration types and redraw. */
-  update(rules: DrawRule[]) {
+  update(rules: DrawRule[], tags: DrawTag[] = []) {
     this.types.forEach((t) => t.dispose());
     this.types = rules.map((r) => vscode.window.createTextEditorDecorationType(decorationOptions(r.style)));
     this.rules = rules.map((r) => ({ when: compileCondition(r.when), style: r.style, specificity: specificity(r.when), folder: r.folder }));
+    this.tags = tags.map((t) => ({ when: compileCondition(t.when), modifiers: t.modifiers, folder: t.folder }));
     this.cache.clear();
     vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document));
   }
@@ -341,11 +390,9 @@ export class TokenDecorator implements vscode.Disposable {
     const editors = vscode.window.visibleTextEditors.filter((e) => e.document === doc);
     if (!editors.length) return;
     // This document's rules, least specific first, so the most specific match is found from the end.
-    const uri = doc.uri.toString();
-    const applies = (r: Compiled) => !r.folder || uri.startsWith(r.folder.endsWith("/") ? r.folder : `${r.folder}/`);
     const order = this.rules
       .map((_, i) => i)
-      .filter((i) => applies(this.rules[i]))
+      .filter((i) => inFolder(this.rules[i].folder, doc.uri))
       .sort((a, b) => this.rules[a].specificity - this.rules[b].specificity || a - b);
     const ranges: vscode.Range[][] = this.rules.map(() => []);
     if (order.length) {
@@ -373,7 +420,11 @@ export class TokenDecorator implements vscode.Disposable {
     }
   }
 
-  /** Tokens and symbols of a document, also one that isn't open (a base type's file). */
+  private needsSymbols() {
+    return this.rules.some((r) => needsSymbols(r.when)) || this.tags.some((t) => needsSymbols(t.when));
+  }
+
+  /** Tokens (with custom modifiers) and symbols of a document, also one that isn't open (a base type's file). */
   private load: Loader = async (uri) => {
     const key = uri.toString();
     const doc = await vscode.workspace.openTextDocument(uri).then(
@@ -381,10 +432,13 @@ export class TokenDecorator implements vscode.Disposable {
       () => undefined,
     );
     if (!doc) return undefined;
-    const hit = this.cache.get(key);
-    if (hit && hit.version === doc.version) return hit.data;
-    const data = this.analyze(doc);
-    this.cache.set(key, { version: doc.version, data });
+    let hit = this.cache.get(key);
+    if (!hit || hit.version !== doc.version) {
+      hit = { version: doc.version, data: this.analyze(doc) };
+      this.cache.set(key, hit);
+    }
+    const data = await hit.data;
+    await data?.ensureTags();
     return data;
   };
 
@@ -392,8 +446,9 @@ export class TokenDecorator implements vscode.Disposable {
     const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", doc.uri);
     const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", doc.uri);
     if (!legend || !tokens) return undefined;
-    const symbols = this.rules.some((r) => needsSymbols(r.when)) ? await this.symbols(doc) : [];
-    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load);
+    const symbols = this.needsSymbols() ? await this.symbols(doc) : [];
+    const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
+    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */

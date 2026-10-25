@@ -36,6 +36,13 @@
     { "match": "\\$[\\w-]+", "name": "variable.other.semantic-theme-rules" },
     { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.numeric.color.semantic-theme-rules" },
     { "match": "->|=>", "name": "keyword.operator.arrow.semantic-theme-rules" },
+    {
+      "match": "(\\+=)\\s*([A-Za-z_][\\w-]*(?:\\s*,\\s*[A-Za-z_][\\w-]*)*)",
+      "captures": {
+        "1": { "name": "keyword.operator.assignment.semantic-theme-rules" },
+        "2": { "name": "entity.other.attribute-name.modifier.semantic-theme-rules" }
+      }
+    },
     { "match": "[&|!]", "name": "keyword.operator.logical.semantic-theme-rules" },
     { "match": "\\b(dark|light|contrast)\\b(?!\\s*(?:=|\\())", "name": "constant.language.flag.semantic-theme-rules" },
     { "match": "\\b_\\b", "name": "constant.language.wildcard.semantic-theme-rules" },
