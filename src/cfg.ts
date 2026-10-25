@@ -2,19 +2,29 @@
 //
 //   ; comment
 //   $name = color                      variable: top level only, assigned once, usable anywhere
+//   @name => head                      a named selector expression, used as @name in heads:
+//                                      @slots => contains(text("__slots__") variable.classMember)
+//                                      @slots class = ...; top level only, assigned once, usable anywhere
 //   selector = value                   rule; skipped where the theme has a rule for exactly that selector
 //                                      semantic selectors (struct, variable.readonly) also set their
 //                                      TextMate fallback scope; other dotted names are TextMate scopes
 //   override rule | override { rules }  rules that also replace the theme's own colors
+//   head = value | head { rules }      the head is a selector expression: struct, struct | enum,
+//                                      language(python) selfParameter, text("__slots__") variable,
+//                                      contains(text("__slots__") variable.classMember) class,
+//                                      within(class) method, inherits(contains(...)) class;
+//                                      side by side means &, also ! | and parentheses; a block's head
+//                                      and the heads inside must all hold. Plain selectors go to
+//                                      settings, anything else is drawn as decorations
 //   ui | semantic | textmate rule or { rules }  say what kind of name a selector is, instead of
 //                                      inferring it: token type, then UI color ID, then TextMate scope
-//   match $type { dark & contrast { rules } _ { rules } }      block: rules for matching themes
+//   match($type) { dark & contrast { rules } _ { rules } }      block: rules for matching themes
 //
 // Later rules in the file override earlier ones for the same selector.
-//   value: color | style(color, bold | !italic) | $none | match $type { dark -> value  _ -> value }
+//   value: color | style(color, bold | !italic) | $none | match($type) { dark -> value  _ -> value }
 //
 // Keywords are only recognized where a token name could not stand: "match" must be followed by
-// a $subject, "style" by "(", "override" / "ui" / "semantic" / "textmate" by "{" or a statement
+// "($subject)", "style" by "(", "override" / "ui" / "semantic" / "textmate" by "{" or a statement
 // (or by a name, in values: ui editor.background), and a selector by "=".
 
 import { Color, parseHex } from "./color";
@@ -81,12 +91,25 @@ export interface VarDecl {
   value: Expr;
 }
 
+/** @name => head; uses of @name are replaced by the head when parsing ends. */
+export interface ExpressionDecl {
+  kind: "expression";
+  name: string;
+  nameRange: Range;
+  cond: Cond;
+}
+
 export interface Rule {
   kind: "rule";
+  /** The left side: struct, struct | enum, text("__slots__") variable.classMember, ... */
+  head: Cond;
+  /** The head as text, for messages; for a plain selector just its name. */
   selector: string;
   selectorRange: Range;
   /** Set inside ui / semantic / textmate; otherwise the kind is inferred from the name. */
   target?: NameKind;
+  /** The heads of enclosing blocks; they and the rule's own head must all hold. */
+  when?: Cond;
   value: Value;
 }
 
@@ -104,6 +127,89 @@ export interface Target {
   range: Range;
 }
 
+/**
+ * A selector expression, the head of a rule or block. Atoms: a selector (struct, *.static,
+ * parameter:python), language(python, csharp), text("__slots__"), and three that look at symbols:
+ * contains(x) for tokens naming a symbol that directly contains a match, within(x) for tokens inside
+ * a symbol whose name matches, inherits(x) for tokens naming a type with a base type whose name
+ * matches. Side by side means & (and), also | ! ( ). @name stands for a declared expression; it
+ * only exists while parsing.
+ */
+export type Cond =
+  | { kind: "selector"; selector: string; range: Range }
+  | { kind: "language"; ids: string[]; range: Range }
+  | { kind: "text"; globs: string[]; range: Range }
+  | { kind: "contains" | "within" | "inherits"; inner: Cond; range: Range }
+  | { kind: "not"; operand: Cond; range: Range }
+  | { kind: "and" | "or"; left: Cond; right: Cond; range: Range }
+  | { kind: "name"; name: string; range: Range };
+
+/** A selector expression without source positions. */
+export type TokenCondition =
+  | { kind: "selector"; selector: string }
+  | { kind: "language"; ids: string[] }
+  | { kind: "text"; globs: string[] }
+  | { kind: "contains" | "within" | "inherits"; inner: TokenCondition }
+  | { kind: "not"; operand: TokenCondition }
+  | { kind: "and" | "or"; left: TokenCondition; right: TokenCondition };
+
+/** The expression as written (normalized), for messages and logs. */
+export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]): string {
+  switch (c.kind) {
+    case "selector":
+      return c.selector;
+    case "language":
+      return `language(${c.ids.join(", ")})`;
+    case "text":
+      return `text(${c.globs.map((g) => `"${g}"`).join(", ")})`;
+    case "contains":
+    case "within":
+    case "inherits":
+      return `${c.kind}(${conditionText(c.inner)})`;
+    case "not":
+      return `!${conditionText(c.operand, "not")}`;
+    case "and": {
+      const s = `${conditionText(c.left, "and")} ${conditionText(c.right, "and")}`;
+      return parent === "not" ? `(${s})` : s;
+    }
+    case "or": {
+      const s = `${conditionText(c.left, "or")} | ${conditionText(c.right, "or")}`;
+      return parent && parent !== "or" ? `(${s})` : s;
+    }
+  }
+}
+
+/** Removes source positions. */
+export function stripCondition(c: Cond): TokenCondition {
+  switch (c.kind) {
+    case "selector":
+      return { kind: "selector", selector: c.selector };
+    case "language":
+      return { kind: "language", ids: c.ids };
+    case "text":
+      return { kind: "text", globs: c.globs };
+    case "contains":
+    case "within":
+    case "inherits":
+      return { kind: c.kind, inner: stripCondition(c.inner) };
+    case "not":
+      return { kind: "not", operand: stripCondition(c.operand) };
+    case "name":
+      // Only before names are resolved, for the text of a head: "@slots class".
+      return { kind: "selector", selector: `@${c.name}` };
+    default:
+      return { kind: c.kind, left: stripCondition(c.left), right: stripCondition(c.right) };
+  }
+}
+
+/** head { rules }, e.g. language(python) { ... }; the rules inside carry the head as a condition. */
+export interface WhenBlock {
+  kind: "when";
+  cond: Cond;
+  body: Stmt[];
+  range: Range;
+}
+
 export interface Block {
   kind: "block";
   subject: Subject;
@@ -111,11 +217,12 @@ export interface Block {
   range: Range;
 }
 
-export type Stmt = VarDecl | Rule | Block | Override | Target;
+export type Stmt = VarDecl | ExpressionDecl | Rule | Block | Override | Target | WhenBlock;
 
 export interface RulesFile {
   stmts: Stmt[];
   variables: Map<string, VarDecl>;
+  expressions: Map<string, ExpressionDecl>;
   problems: Problem[];
 }
 
@@ -123,6 +230,10 @@ export interface RulesFile {
 export type NameKind = "semantic" | "textmate" | "ui";
 export const NAME_KINDS: NameKind[] = ["semantic", "textmate", "ui"];
 const isNameKind = (text: string): text is NameKind => (NAME_KINDS as string[]).includes(text);
+
+/** "*" matches any run of characters; everything else is literal. */
+export const globToRegExp = (glob: string, flags = "") =>
+  new RegExp(`^${glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, flags);
 
 export type Flag = "dark" | "light" | "contrast";
 export const FLAGS: Flag[] = ["dark", "light", "contrast"];
@@ -160,7 +271,7 @@ export function matchesPattern(p: Pattern, flags: Set<Flag>, themeId: string): b
     case "flag":
       return flags.has(p.flag);
     case "name":
-      return new RegExp(`^${p.glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, "i").test(themeId);
+      return globToRegExp(p.glob, "i").test(themeId);
     case "not":
       return !matchesPattern(p.operand, flags, themeId);
     case "and":
@@ -172,7 +283,7 @@ export function matchesPattern(p: Pattern, flags: Set<Flag>, themeId: string): b
 
 // ---------------------------------------------------------------------------------------------
 
-type TokenType = "hex" | "var" | "ident" | "num" | "string" | "punct";
+type TokenType = "hex" | "var" | "at" | "ident" | "num" | "string" | "punct";
 
 interface Token {
   type: TokenType;
@@ -187,7 +298,7 @@ class ParseError extends Error {
 }
 
 const TOKEN_RE =
-  /(#[0-9a-fA-F]+)|\$([\w-]*)|((?:\*(?=\.)|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(\?=|->|[=(),!|&{}*])/y;
+  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|[=(),!|&{}*])/y;
 
 function tokenize(text: string, problems: Problem[]): Token[] {
   const tokens: Token[] = [];
@@ -204,20 +315,17 @@ function tokenize(text: string, problems: Problem[]): Token[] {
       const m = TOKEN_RE.exec(lineText);
       const range = (len: number): Range => ({ start: { line, col }, end: { line, col: col + len } });
       if (!m) {
-        problems.push({
-          range: range(1),
-          message: c === "@" ? "'@' is not needed: theme colors are plain names, e.g. 'class'" : `Unexpected character '${c}'`,
-        });
+        problems.push({ range: range(1), message: `Unexpected character '${c}'` });
         col++;
         continue;
       }
-      const [all, hex, v, ident, num, str] = m;
+      const [all, hex, v, at, ident, num, str] = m;
       const type: TokenType =
-        hex !== undefined ? "hex" : v !== undefined ? "var" : ident !== undefined ? "ident" : num !== undefined ? "num" : str !== undefined ? "string" : "punct";
+        hex !== undefined ? "hex" : v !== undefined ? "var" : at !== undefined ? "at" : ident !== undefined ? "ident" : num !== undefined ? "num" : str !== undefined ? "string" : "punct";
       if (type === "string" && !all.endsWith('"') || all === '"') {
         problems.push({ range: range(all.length), message: "Unclosed string" });
       }
-      tokens.push({ type, text: type === "var" ? v : type === "string" ? all.replace(/^"|"$/g, "") : all, range: range(all.length) });
+      tokens.push({ type, text: type === "var" ? v : type === "at" ? at : type === "string" ? all.replace(/^"|"$/g, "") : all, range: range(all.length) });
       col += all.length;
     }
   });
@@ -230,10 +338,12 @@ export function parseRulesFile(text: string): RulesFile {
   const problems: Problem[] = [];
   const tokens = tokenize(text, problems);
   const variables = new Map<string, VarDecl>();
+  const expressions = new Map<string, ExpressionDecl>();
   let i = 0;
   let depth = 0; // braces consumed so far, for error recovery
   let overrideDepth = 0;
   let target: { kind: NameKind; range: Range } | undefined;
+  let when: Cond | undefined;
 
   const peek = (k = 0) => tokens[i + k];
   const isPunct = (t: Token | undefined, p: string) => t?.type === "punct" && t.text === p;
@@ -256,7 +366,7 @@ export function parseRulesFile(text: string): RulesFile {
     return next();
   };
   const sameLine = (a: Token | undefined, b: Token | undefined) => !!a && !!b && a.range.end.line === b.range.start.line;
-  const isMatchStart = () => peek()?.type === "ident" && peek().text === "match" && peek(1)?.type === "var";
+  const isMatchStart = () => peek()?.type === "ident" && peek().text === "match" && isPunct(peek(1), "(");
 
   // After a statement or arm, the next one must start on a new line (or after "," / before "}").
   const expectBreak = (allowComma: boolean) => {
@@ -336,6 +446,97 @@ export function parseRulesFile(text: string): RulesFile {
     return fail(t?.type === "ident" ? `Theme names are quoted: "${t.text}"` : 'Expected a theme name like "Dark Modern", or _');
   }
 
+  // ---- selector expressions: struct, language(python), text(...), contains(...), @name, side by side, ! | ( )
+
+  const isHeadStart = (t: Token | undefined) => t?.type === "ident" || t?.type === "at" || t?.type === "var" || isPunct(t, "*") || isPunct(t, "!") || isPunct(t, "(");
+
+  function parseCond(): Cond {
+    let left = parseCondAnd();
+    while (isPunct(peek(), "|")) {
+      next();
+      const right = parseCondAnd();
+      left = { kind: "or", left, right, range: span(left.range, right.range) };
+    }
+    return left;
+  }
+
+  function parseCondAnd(): Cond {
+    let left = parseCondUnary();
+    // Side by side on one line means both: text("__slots__") variable.classMember.
+    const adjacent = () => isHeadStart(peek()) && sameLine(tokens[i - 1], peek());
+    while (isPunct(peek(), "&") || adjacent()) {
+      if (isPunct(peek(), "&")) next();
+      const right = parseCondUnary();
+      left = { kind: "and", left, right, range: span(left.range, right.range) };
+    }
+    return left;
+  }
+
+  // The comma-separated list inside language(...) / text(...), after the "(".
+  function parseList(type: "ident" | "string", what: string): string[] {
+    const items: string[] = [];
+    do {
+      const x = peek();
+      if (x?.type !== type) fail(`Expected ${what}`);
+      next();
+      if (!x.text) problems.push({ range: x.range, message: `Expected ${what}` });
+      else items.push(x.text);
+    } while (isPunct(peek(), ",") && next());
+    return items;
+  }
+
+  function parseCondUnary(): Cond {
+    const t = peek();
+    if (isPunct(t, "!")) {
+      next();
+      const operand = parseCondUnary();
+      return { kind: "not", operand, range: span(t.range, operand.range) };
+    }
+    if (isPunct(t, "(")) {
+      next();
+      const c = parseCond();
+      expect(")");
+      return c;
+    }
+    if (t?.type === "at") {
+      next();
+      if (!t.text) fail("Expected an expression name after '@'", t);
+      return { kind: "name", name: t.text, range: t.range };
+    }
+    if (t?.type === "var") fail(`$${t.text} is a color; named selector expressions start with @: @${t.text || "name"} => ...`, t);
+    const call = (name: string) => t?.type === "ident" && t.text === name && isPunct(peek(1), "(");
+    if (call("text")) {
+      next();
+      next();
+      const globs = parseList("string", 'the token text in quotes, e.g. text("__slots__")');
+      const close = expect(")", "')' to close text(...)");
+      return { kind: "text", globs, range: span(t.range, close.range) };
+    }
+    if (call("language")) {
+      next();
+      next();
+      const ids = parseList("ident", "a language id like python");
+      const close = expect(")", "')' to close language(...)");
+      return { kind: "language", ids, range: span(t.range, close.range) };
+    }
+    for (const kind of ["contains", "within", "inherits"] as const) {
+      if (!call(kind)) continue;
+      next();
+      next();
+      const inner = parseCond();
+      const close = expect(")", `')' to close ${kind}(...)`);
+      return { kind, inner, range: span(t.range, close.range) };
+    }
+    if (t?.type === "ident" || isPunct(t, "*")) {
+      next();
+      if (!/^(\*|[A-Za-z_][\w-]*)(\.[A-Za-z_][\w-]*)*(:[\w-]+)?$/.test(t.text)) {
+        problems.push({ range: t.range, message: "Selectors look like 'struct', 'variable.readonly', '*.static' or 'parameter:python'" });
+      }
+      return { kind: "selector", selector: t.text, range: t.range };
+    }
+    return fail("Expected a selector, text(...), language(...), contains(...), within(...), inherits(...), @expression, '!' or '('");
+  }
+
   // ---- color expressions
 
   function parseExpr(): Expr {
@@ -381,6 +582,9 @@ export function parseRulesFile(text: string): RulesFile {
         if (t.text === "style") fail("style() must wrap the whole value, e.g. style(mix(class, function), bold)", t);
         if (!FUNCTION_NAMES.has(t.text)) {
           const flagNext = peek(1) && (isPunct(peek(1), "!") || (peek(1).type === "ident" && STYLE_NAMES.has(peek(1).text)));
+          if (["text", "language", "contains", "within", "inherits"].includes(t.text)) {
+            fail(`${t.text}(...) is part of a selector expression, not a color; name one with @name => ${t.text}(...)`, t);
+          }
           fail(`Unknown function '${t.text}'${flagNext ? `. For font styles write style(${t.text}, ...)` : ""}`, t);
         }
         const open = next();
@@ -469,9 +673,11 @@ export function parseRulesFile(text: string): RulesFile {
     build: (start: Range, subject: Subject, arms: Arm<T>[], end: Range) => T,
   ): T {
     const kw = next();
+    next();
     const subj = next();
-    if (subj.text !== "type" && subj.text !== "theme") fail("match works on $type or $theme", subj);
+    if (subj?.type !== "var" || (subj.text !== "type" && subj.text !== "theme")) fail("match works on $type or $theme", subj);
     const subject = subj.text as Subject;
+    expect(")", "')' after the match subject");
     expect("{");
     const arms: Arm<T>[] = [];
     while (peek() && !isPunct(peek(), "}")) {
@@ -490,9 +696,11 @@ export function parseRulesFile(text: string): RulesFile {
 
   function parseBlock(): Block {
     const kw = next();
+    next();
     const subj = next();
-    if (subj.text !== "type" && subj.text !== "theme") fail("match works on $type or $theme", subj);
+    if (subj?.type !== "var" || (subj.text !== "type" && subj.text !== "theme")) fail("match works on $type or $theme", subj);
     const subject = subj.text as Subject;
+    expect(")", "')' after the match subject");
     expect("{");
     const arms: Arm<Stmt[]>[] = [];
     while (peek() && !isPunct(peek(), "}")) {
@@ -507,6 +715,29 @@ export function parseRulesFile(text: string): RulesFile {
     return { kind: "block", subject, arms, range: span(kw.range, close.range) };
   }
 
+  // $variables and @expressions; true when the name can be declared.
+  function declare(t: Token, topLevel: boolean, what: "variable" | "expression"): boolean {
+    const sigil = what === "variable" ? "$" : "@";
+    const first = (what === "variable" ? variables : expressions).get(t.text)?.nameRange;
+    if (!t.text) {
+      problems.push({ range: t.range, message: `Expected a${what === "variable" ? "" : "n"} ${what} name after '${sigil}'` });
+    } else if (what === "variable" && BUILTINS.has(t.text)) {
+      problems.push({ range: t.range, message: `$${t.text} is provided and can't be assigned` });
+    } else if (!topLevel) {
+      problems.push({
+        range: t.range,
+        message: what === "variable"
+          ? "Variables can only be declared at the top level; use a match value instead: $x = match($type) { ... }"
+          : "Expressions can only be declared at the top level",
+      });
+    } else if (first) {
+      problems.push({ range: t.range, message: `${sigil}${t.text} is already assigned on line ${first.start.line + 1}; ${what}s can only be assigned once` });
+    } else {
+      return true;
+    }
+    return false;
+  }
+
   function parseStatement(topLevel: boolean): Stmt {
     const t = peek();
     if (t.type === "var" && isPunct(peek(1), "=")) {
@@ -514,23 +745,20 @@ export function parseRulesFile(text: string): RulesFile {
       next();
       const value = parseExpr();
       const decl: VarDecl = { kind: "var", name: t.text, nameRange: t.range, value };
-      if (!t.text) {
-        problems.push({ range: t.range, message: "Expected a variable name after '$'" });
-      } else if (BUILTINS.has(t.text)) {
-        problems.push({ range: t.range, message: `$${t.text} is provided and can't be assigned` });
-      } else if (!topLevel) {
-        problems.push({ range: t.range, message: "Variables can only be declared at the top level; use a match value instead: $x = match $type { ... }" });
-      } else if (variables.has(t.text)) {
-        const first = variables.get(t.text)!;
-        problems.push({ range: t.range, message: `$${t.text} is already assigned on line ${first.nameRange.start.line + 1}; variables can only be assigned once` });
-      } else {
-        variables.set(t.text, decl);
-      }
+      if (declare(t, topLevel, "variable")) variables.set(t.text, decl);
+      return decl;
+    }
+    // "@name => head"; "@name = value" and "@name head = value" are rules.
+    if (t.type === "at" && isPunct(peek(1), "=>")) {
+      next();
+      next();
+      const decl: ExpressionDecl = { kind: "expression", name: t.text, nameRange: t.range, cond: parseCond() };
+      if (declare(t, topLevel, "expression")) expressions.set(t.text, decl);
       return decl;
     }
     if (isMatchStart()) return parseBlock();
     // "override { rules }" or "override <statement>"; "override = ..." is a rule for a token named override.
-    if (t.type === "ident" && t.text === "override" && peek(1) && !isPunct(peek(1), "=") && !isPunct(peek(1), "?=")) {
+    if (t.type === "ident" && t.text === "override" && peek(1) && !isPunct(peek(1), "=")) {
       next();
       if (overrideDepth > 0) {
         problems.push({ range: t.range, message: "Already inside an override block", warning: true });
@@ -572,24 +800,29 @@ export function parseRulesFile(text: string): RulesFile {
         target = outer;
       }
     }
-    if (t.type === "ident" && isPunct(peek(1), "?=")) {
-      fail("'?=' is not needed: '=' already only fills what the theme leaves; put rules that replace theme colors in override { }", peek(1));
-    }
-    if (t.type === "ident" && isPunct(peek(1), "=")) {
-      next();
-      next();
-      if (!/^(\*|[A-Za-z_][\w-]*)(\.[A-Za-z_][\w-]*)*(:[\w-]+)?$/.test(t.text)) {
-        problems.push({ range: t.range, message: "Selectors look like 'struct', 'variable.readonly', '*.static' or 'parameter:python'" });
+    // "head = value" or "head { rules }"; a block's head and the heads inside must all hold.
+    if (isHeadStart(t)) {
+      const head = parseCond();
+      const n = peek();
+      if (isPunct(n, "{")) {
+        next();
+        const outer = when;
+        when = outer ? { kind: "and", left: outer, right: head, range: head.range } : head;
+        try {
+          const body = parseStatements(false);
+          const end = expect("}", "'}' to close the block");
+          return { kind: "when", cond: head, body, range: span(head.range, end.range) };
+        } finally {
+          when = outer;
+        }
       }
-      return { kind: "rule", selector: t.text, selectorRange: t.range, target: target?.kind, value: parseValue() };
+      if (isPunct(n, "=")) {
+        next();
+        return { kind: "rule", head, selector: conditionText(stripCondition(head)), selectorRange: head.range, target: target?.kind, when, value: parseValue() };
+      }
+      return fail(`Expected '=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
     }
-    if (isPunct(t, "*") && isPunct(peek(1), "=")) {
-      return fail("Selectors with '*' need a modifier, e.g. '*.static'");
-    }
-    const after = sameLine(t, peek(1)) ? peek(1) : t;
-    if (t.type === "var") return fail(`Expected '=' after $${t.text}`, after);
-    if (t.type === "ident") return fail(`Expected '=' after '${t.text}'`, after);
-    return fail("Expected a rule (selector = value), a variable ($name = value), a match, or an override / ui / semantic / textmate block");
+    return fail("Expected a rule (selector = value), a variable ($name = value), an expression (@name => head), a match, or an override / ui / semantic / textmate block");
   }
 
   function parseStatements(topLevel: boolean): Stmt[] {
@@ -603,15 +836,16 @@ export function parseRulesFile(text: string): RulesFile {
         const st = parseStatement(topLevel);
         stmts.push(st);
         if (st.kind === "rule") {
-          const prev = seen.get(st.selector);
+          const key = st.when ? `${conditionText(stripCondition(st.when))} ${st.selector}` : st.selector;
+          const prev = seen.get(key);
           if (prev) {
             problems.push({
               range: st.selectorRange,
-              message: `'${st.selector}' is already set on line ${prev.selectorRange.start.line + 1} in this block; this one wins`,
+              message: `'${key}' is already set on line ${prev.selectorRange.start.line + 1} in this block; this one wins`,
               warning: true,
             });
           }
-          seen.set(st.selector, st);
+          seen.set(key, st);
         }
         expectBreak(false);
       } catch (e) {
@@ -646,8 +880,98 @@ export function parseRulesFile(text: string): RulesFile {
     }
   }
 
-  const stmts = parseStatements(true);
-  return { stmts, variables, problems };
+  // ---- @name in heads: replaced by the declared expression, which may come later in the file
+
+  const resolved = new Map<string, Cond | undefined>();
+  const resolving = new Set<string>();
+  const used = new Set<string>();
+
+  // The declaration's head with its names resolved, once per declaration.
+  function lookup(decl: ExpressionDecl): Cond | undefined {
+    if (!resolved.has(decl.name)) {
+      resolving.add(decl.name);
+      resolved.set(decl.name, resolve(decl.cond));
+      resolving.delete(decl.name);
+    }
+    return resolved.get(decl.name);
+  }
+
+  // The head with every @name replaced; undefined (and reported) when a name can't be.
+  function resolve(c: Cond): Cond | undefined {
+    switch (c.kind) {
+      case "name": {
+        used.add(c.name);
+        const decl = expressions.get(c.name);
+        if (!decl) {
+          problems.push({ range: c.range, message: `Unknown expression @${c.name}; declare it with @${c.name} => ...` });
+          return undefined;
+        }
+        if (resolving.has(c.name)) {
+          problems.push({ range: c.range, message: `@${c.name} refers to itself` });
+          return undefined;
+        }
+        // Problems with the whole head point at the use; those of its parts at the declaration.
+        const cond = lookup(decl);
+        return cond && { ...cond, range: c.range };
+      }
+      case "contains":
+      case "within":
+      case "inherits": {
+        const inner = resolve(c.inner);
+        return inner && { ...c, inner };
+      }
+      case "not": {
+        const operand = resolve(c.operand);
+        return operand && { ...c, operand };
+      }
+      case "and":
+      case "or": {
+        const left = resolve(c.left);
+        const right = resolve(c.right);
+        return left && right && { ...c, left, right };
+      }
+      default:
+        return c;
+    }
+  }
+
+  // Statements whose head can't be resolved are dropped; the problem is already reported.
+  function resolveAll(stmts: Stmt[]): Stmt[] {
+    return stmts.flatMap((st): Stmt[] => {
+      switch (st.kind) {
+        case "rule": {
+          const head = resolve(st.head);
+          const when = st.when && resolve(st.when);
+          return head && (!st.when || when) ? [{ ...st, head, when }] : [];
+        }
+        case "when": {
+          const cond = resolve(st.cond);
+          return cond ? [{ ...st, cond, body: resolveAll(st.body) }] : [];
+        }
+        case "expression": {
+          // A declaration that failed (assigned twice, not top level) is dropped.
+          const cond = expressions.get(st.name) === st ? lookup(st) : undefined;
+          return cond ? [{ ...st, cond }] : [];
+        }
+        case "override":
+        case "target":
+          return [{ ...st, body: resolveAll(st.body) }];
+        case "block":
+          return [{ ...st, arms: st.arms.map((a) => ({ ...a, body: resolveAll(a.body) })) }];
+        default:
+          return [st];
+      }
+    });
+  }
+
+  const stmts = resolveAll(parseStatements(true));
+  for (const [name, decl] of expressions) {
+    if (!used.has(name)) problems.push({ range: decl.nameRange, message: `@${name} is never used`, warning: true });
+    const cond = resolved.get(name);
+    if (cond) expressions.set(name, { ...decl, cond });
+    else expressions.delete(name);
+  }
+  return { stmts, variables, expressions, problems };
 }
 
 export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to apply; synced via Settings Sync.
@@ -656,10 +980,15 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;                            semantic selectors also set their TextMate fallback scope;
 ;                            other dotted names are TextMate scopes: string.quoted.docstring.python = #6A9955
 ;   editorCursor.foreground  UI color IDs are UI colors: editorBracketHighlight.foreground1 = soften(keyword)
+;   struct | enum = ...                 several selectors; language(python) x means x:python
+;   text("__slots__") variable.classMember = ...   only tokens with that text, * as wildcard
+;   contains(text("__slots__") variable.classMember) class = ...   classes with such a member
+;   language(python, csharp) { rules }  semantic rules per language; inside, * alone means every type
 ;   ui | semantic | textmate say the kind instead of inferring it: textmate comment = #6A9955,
 ;                            semantic struct = ... (no TextMate fallback), ui { rules }, ui editor.background
 ;   override rule            also replaces the theme's own color; override { rules } for several
 ;   $name = color            variable: top level, assigned once, use as $name
+;   @name => head            a named selector expression, used in heads: @name class = ...
 ;
 ;   class, function, ...     the active theme's color for a semantic token type
 ;   variable.language        the active theme's color for a TextMate scope (names with a dot)
@@ -672,8 +1001,8 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   style(c, bold | !italic)  font styles; style(underline) keeps the color
 ;   $none                    no rule for this selector
 ;
-;   match $type  { dark & contrast -> ...   light -> ...   _ -> ... }    flags: dark light contrast
-;   match $theme { "Dark Modern" | "*Light*" { rules } }                 a block of rules
+;   match($type)  { dark & contrast -> ...   light -> ...   _ -> ... }    flags: dark light contrast
+;   match($theme) { "Dark Modern" | "*Light*" { rules } }                 a block of rules
 ;   later rules override earlier ones for the same selector
 
 ; Visual Studio's relation between class and the other type colors, measured on its dark theme:

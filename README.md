@@ -16,7 +16,7 @@ immediately, and they sync across machines with Settings Sync (UI State).
 ```ini
 ; variables: top level, assigned once, usable before their definition
 $structLike = #86C691
-$accent = match $type {
+$accent = match($type) {
   dark & contrast -> emphasize(class, 20%)
   _               -> emphasize(class)
 }
@@ -35,7 +35,7 @@ override {
 }
 
 ; a block of rules for matching themes
-match $theme {
+match($theme) {
   "Dark Modern" | "Dark 2026" {
     struct = $structLike
   }
@@ -64,6 +64,14 @@ override ui {
 | `struct`, `parameter:python`, `*.static` | Semantic selector: a token type, optionally with known modifiers or a language. Also sets the TextMate scope VS Code falls back to (`struct` → `entity.name.type.struct`), so the color shows before the language server is ready |
 | `string.quoted.docstring.python` | TextMate scope: any other name with a dot. Sets only the TextMate color |
 | `editorBracketHighlight.foreground1` | UI color: any color ID VS Code or an installed extension knows. Takes a color, not `style()` |
+| `struct \| enum`, `variable *.readonly`, `language(python) selfParameter` | A rule's left side is a selector expression: side by side means *and*, plus `\|`, `!` and parentheses. Where it boils down to plain selectors, they go to settings (`struct` and `enum`; `variable.readonly`; `selfParameter:python`) with gap filling and TextMate fallback as usual. `language(python, csharp)` is a list |
+| `text("__slots__") variable.classMember`, `text("__*__", "_*") *` | Only tokens with one of these texts (`*` wildcards) |
+| `contains(text("__slots__") variable.classMember) class` | Only tokens naming a symbol (class, function, …) that directly contains a match: classes that define `__slots__`, at their declaration and uses in the same file. Uses the language server's document symbols. The inside is a selector expression too: `contains(text("__enter__") method \| text("__aenter__") method)` |
+| `within(class text("Ctx")) method` | Only tokens inside a symbol whose name token matches: here methods of a class named `Ctx`. Same file, from document symbols |
+| `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance, C# and TypeScript provide it), so it appears a little later |
+| `@slots => contains(text("__slots__") variable.classMember)` | A named selector expression, used as `@slots` in any head: `@slots class = …`, `inherits(@slots) class`, `@slots & !contains(…) class`, or alone: `@slots = …`. Top level only, assigned once, usable before its declaration |
+| `head { rules }` | A block: its head and each rule's head must all hold, e.g. `language(python) { … }`, `contains(…) & !text("_*") { … }` |
+| Decorations | Heads that aren't plain selectors (`text`, `contains`, `!`, two different types, …) are drawn as editor decorations over the language server's semantic tokens instead of written to settings. They always win over the theme and appear shortly after the language server has analyzed the file. Where several match a token, the most specific wins, like VS Code ranks semantic rules: a token type over `*`, more modifiers, a language, then an exact text over a wildcard; file order only between equals |
 | `ui name`, `semantic name`, `textmate name`, `ui { rules }` | Say what kind of name it is instead of inferring it (token type, then UI color ID, then TextMate scope). The name must fit the kind. `semantic` writes only the semantic rule, without the TextMate fallback; `textmate` takes the name literally as a scope. Combines with `override`, also in values: `ui editor.background` |
 | `class`, `function` (as a value) | The active theme's color for that semantic selector |
 | `variable.language` (as a value) | The active theme's color for that TextMate scope |
@@ -93,7 +101,7 @@ bottom and the first match wins; `_` matches anything.
 | `$theme` | Quoted theme names with `*` wildcards: `"Dark Modern" | "*Light*"` |
 
 `dark` and `light` are decided once, by the actual brightness of the theme's editor
-background, and mean the same everywhere: in `match $type`, in `offset` conditions and in
+background, and mean the same everywhere: in `match($type)`, in `offset` conditions and in
 `emphasize` / `soften`. `contrast` comes from the theme's declared type. Impossible or
 unreachable arms, and value matches that don't cover every theme type, are flagged as you type.
 

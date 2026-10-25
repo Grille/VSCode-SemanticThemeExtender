@@ -1,0 +1,4 @@
+{
+  // The welcome page in test windows seems to trigger extension host crashes (exit code 134).
+  "workbench.startupEditor": "none"
+}

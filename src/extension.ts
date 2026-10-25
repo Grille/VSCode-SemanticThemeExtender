@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { DEFAULT_RULES, parseRulesFile } from "./cfg";
+import { TokenDecorator } from "./decorations";
 import { compile } from "./engine";
 import { LANGUAGE_ID, registerLanguage } from "./language";
 import { Customizations, normalizeOwned, SEMANTIC_SETTING, strip, TEXTMATE_SETTING, UI_SETTING, write } from "./settings";
@@ -14,6 +15,8 @@ let output: vscode.OutputChannel;
 let state: vscode.Memento;
 let store: RulesStore;
 let cachedResolver: ThemeResolver | undefined;
+let decorator: TokenDecorator;
+let lastTextRules = "";
 
 export function activate(context: vscode.ExtensionContext) {
   output = vscode.window.createOutputChannel("Semantic Theme Extender");
@@ -22,6 +25,9 @@ export function activate(context: vscode.ExtensionContext) {
   // First, so a rules tab restored at startup can be read as early as possible.
   context.subscriptions.push(vscode.workspace.registerFileSystemProvider("semantic-theme-rules", store, { isCaseSensitive: true }));
   store.announce();
+
+  decorator = new TokenDecorator(() => resolver()?.registry, LANGUAGE_ID);
+  context.subscriptions.push(decorator);
 
   const language = registerLanguage(context, {
     resolver: () => resolver(),
@@ -159,6 +165,12 @@ async function apply(verbose = false) {
   if (!r) return;
   const result = compile(parseRulesFile(store.text), r);
   const { rules, textMate, ui, log } = result;
+  // Text-filtered rules aren't settings; they are drawn over the language server's tokens.
+  const textRules = JSON.stringify(result.textRules);
+  if (textRules !== lastTextRules) {
+    lastTextRules = textRules;
+    decorator.update(result.textRules);
+  }
   const section = `[${r.theme.id}]`;
 
   const before = currentSettings();

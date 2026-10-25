@@ -1,0 +1,130 @@
+; Semantic Theme Extender: feature showcase
+;
+; This file only shows editor features (swatches, hover, errors, completion); it is not applied.
+; To try something for real, copy it into "Semantic Theme Extender: Open Rules".
+; Feel free to edit, break and annotate anything here; ";" starts a comment.
+
+
+; ---- Variables ------------------------------------------------------------------------------
+; Top level only, assigned once, usable before their definition.
+
+$accent  = emphasize(class, 15%)          ; more contrast to the background
+$quiet   = soften(comment)                ; less contrast
+$struct  = offset(class, #4EC9B0, #86C691, light)
+
+
+; ---- Rules: fill what the theme leaves ------------------------------------------------------
+; Skipped where the theme already colors exactly this selector.
+
+struct        = $struct
+interface     = offset(class, #4EC9B0, #B8D7A3, light)
+typeParameter = mix(class, function, 0.5)
+selfParameter:python = variable.language        ; :python limits it to one language
+*.deprecated  = style(strikethrough)            ; a modifier on any token type
+
+; The left side is a selector expression; plain selectors still go to settings:
+enumMember | event = soften(property)           ; two settings rules
+property *.readonly = soften(property, 5%)      ; property.readonly
+language(python) clsParameter = variable.language   ; clsParameter:python
+
+
+; ---- Override: also replace the theme's own colors ------------------------------------------
+
+override enum = style($accent, bold | !italic)
+override {
+  namespace = soften(variable)
+}
+
+
+; ---- Colors and functions -------------------------------------------------------------------
+; Swatches show the result for the active theme; argument swatches show the inputs.
+
+$literal  = #C586C0
+$rgb255   = rgb(134, 198, 145)
+$rgb01    = rgb(0.5, 0.8, 0.6)
+$lighter  = lighten(class, 10%)
+$muted    = desaturate(keyword, 40%)
+$angle    = hue(function, 30°)             ; by angle: uneven between muted and saturated colors
+$visible  = hue(function, 5%)              ; by visible distance: looks the same on any color
+$glass    = alpha(class, 50%)
+
+
+; ---- Matching themes ------------------------------------------------------------------------
+
+$border = match($type) {
+  dark & contrast -> emphasize(keyword, 25%)
+  light           -> darken(keyword, 10%)
+  _               -> keyword
+}
+
+match($theme) {
+  "Dark Modern" | "Dark 2026" {
+    struct = #86C691
+  }
+  "*Light*" {
+    interface = $none                      ; no rule here
+  }
+}
+
+
+; ---- Name kinds -----------------------------------------------------------------------------
+; Inferred: token type, then UI color ID, then TextMate scope. Keywords make it explicit.
+
+editorBracketHighlight.foreground1 = soften(keyword, 15%)      ; inferred: UI color
+string.quoted.docstring.multi.python = $quiet                   ; inferred: TextMate scope
+
+ui {
+  editorBracketHighlight.foreground2 = soften(function, 15%)
+  editorBracketHighlight.foreground3 = soften(type, 15%)
+}
+textmate comment = #6A9955              ; only the TextMate scope, not the semantic token
+semantic property = variable            ; only the semantic rule, no TextMate fallback
+
+$panel = ui editor.background           ; explicit kind in a value
+override ui editor.lineHighlightBackground = alpha($accent, 8%)
+
+; ---- Named expressions ----------------------------------------------------------------------
+; Declared once at the top level, used as $name in any head, before or after the declaration.
+
+@slots => contains(text("__slots__") variable.classMember)
+@isslots => @slots & !contains(text("__dict__") variable.classMember)
+
+; ---- Token text filters ---------------------------------------------------------------------
+; Drawn over the language server's tokens; try with examples/sample.py.
+
+language(python) {
+  text("__slots__") variable.classMember = style(keyword, bold)
+  text("__*__") * = soften(variable)
+}
+
+; Classes by what they contain: classes defining __slots__, and context managers.
+language(python) {
+  contains(text("__slots__") variable.classMember) class = style(struct, bold)
+  contains(text("__enter__", "__exit__") method) class = emphasize(class, 15%)
+
+  ; Conditions combine with & | ! and parentheses, inside contains() too.
+  @isslots class = style(class, italic)
+  contains(text("__enter__") method | text("__aenter__") method) class = emphasize(class, 15%)
+  ; within(): inside a matching symbol; inherits(): with a matching base type, across files.
+  within(class @slots) method = soften(method, 5%)
+  inherits(@slots) class = style(function, bold | italic)
+  !text("_*") {
+    function = soften(function, 5%)
+  }
+}
+
+text("self", "cls") {
+  variable = variable.language
+}
+
+
+; ---- Mistakes the editor catches (hover the squiggles) --------------------------------------
+
+strcut = #FF0000                        ; unknown token type
+classMember = $accent                   ; a modifier, not a type
+ui editorCursr.foreground = #FF0000     ; unknown UI color
+$lost = lighten(class, 10deg)           ; wrong unit
+$gray = hue(#808080, 5%)                ; too muted to shift its hue
+$late = match($type) {
+  dark -> class                         ; light themes not covered
+}

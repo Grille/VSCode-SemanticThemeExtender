@@ -6,13 +6,17 @@
     { "match": ";.*$", "name": "comment.line.semicolon.semantic-theme-rules" },
     { "match": "\"[^\"]*\"?", "name": "string.quoted.double.semantic-theme-rules" },
     {
-      "match": "\\b(match)\\s+(\\$[\\w-]+)",
+      "match": "\\b(match)\\s*\\(\\s*(\\$[\\w-]+)\\s*\\)",
       "captures": {
         "1": { "name": "keyword.control.match.semantic-theme-rules" },
         "2": { "name": "variable.language.builtin.semantic-theme-rules" }
       }
     },
     { "match": "\\boverride(?!\\s*=)(?=\\s*[{A-Za-z_*$])", "name": "keyword.control.override.semantic-theme-rules" },
+    { "match": "\\b(?:contains|within|inherits)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
+    { "match": "\\btext(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
+    { "match": "@[\\w-]*", "name": "entity.name.function.expression.semantic-theme-rules" },
+    { "match": "\\blanguage(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },
     { "match": "\\b(?:ui|semantic|textmate)(?!\\s*=)(?=\\s+[A-Za-z_*]|\\s*\\{)", "name": "keyword.control.kind.semantic-theme-rules" },
     {
       "match": "(\\$[\\w-]+)\\s*(=)(?!=)",
@@ -22,7 +26,7 @@
       }
     },
     {
-      "match": "((?:\\*(?=\\.)|[A-Za-z_])(?:[\\w.:]|-(?=\\w))*)\\s*(=)",
+      "match": "((?:\\*(?=[.:\\s])|[A-Za-z_])(?:[\\w.:]|-(?=\\w))*)\\s*(=)",
       "captures": {
         "1": { "name": "variable.other.constant.selector.semantic-theme-rules" },
         "2": { "name": "keyword.operator.assignment.semantic-theme-rules" }
@@ -31,7 +35,7 @@
     { "match": "\\$(theme|type|none)\\b", "name": "variable.language.builtin.semantic-theme-rules" },
     { "match": "\\$[\\w-]+", "name": "variable.other.semantic-theme-rules" },
     { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.numeric.color.semantic-theme-rules" },
-    { "match": "->", "name": "keyword.operator.arrow.semantic-theme-rules" },
+    { "match": "->|=>", "name": "keyword.operator.arrow.semantic-theme-rules" },
     { "match": "[&|!]", "name": "keyword.operator.logical.semantic-theme-rules" },
     { "match": "\\b(dark|light|contrast)\\b(?!\\s*(?:=|\\())", "name": "constant.language.flag.semantic-theme-rules" },
     { "match": "\\b_\\b", "name": "constant.language.wildcard.semantic-theme-rules" },

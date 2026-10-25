@@ -7,7 +7,7 @@
       "request": "launch",
       // Claude Code is left out: its auto-update keeps retrying in every window, and test windows
       // crashed (exit code 134) right around those attempts. The test window doesn't need it.
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "--disable-extension=anthropic.claude-code"],
+      "args": ["${workspaceFolder}/examples", "--extensionDevelopmentPath=${workspaceFolder}", "--disable-extension=anthropic.claude-code"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "compile"
     },
@@ -18,7 +18,7 @@
       "type": "extensionHost",
       "request": "launch",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}/examples", "--extensionDevelopmentPath=${workspaceFolder}",
         "--disable-extension=anthropic.claude-code",
         "--disable-extension=github.copilot-chat"
       ],
@@ -31,7 +31,7 @@
       "name": "Run Extension (no other extensions)",
       "type": "extensionHost",
       "request": "launch",
-      "args": ["--extensionDevelopmentPath=${workspaceFolder}", "--disable-extensions"],
+      "args": ["${workspaceFolder}/examples", "--extensionDevelopmentPath=${workspaceFolder}", "--disable-extensions"],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
       "preLaunchTask": "compile"
     }

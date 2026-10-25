@@ -1,7 +1,7 @@
 // Editor support for .str rules files: diagnostics, color swatches, hover and completion.
 
 import * as vscode from "vscode";
-import { CONDITION_ARGS, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Range, Rule, Stmt, STYLE_NAMES } from "./cfg";
+import { CONDITION_ARGS, conditionText, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Range, Rule, Stmt, stripCondition, STYLE_NAMES } from "./cfg";
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
@@ -14,7 +14,7 @@ export interface LanguageHost {
 }
 
 const STYLES = [...STYLE_NAMES];
-const KEYWORDS = new Set(["match", "style", "override", ...NAME_KINDS, "_"]);
+const KEYWORDS = new Set(["match", "style", "override", "language", "text", "contains", "within", "inherits", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
@@ -38,8 +38,8 @@ const FUNCTION_DOCS: Record<string, [string, string]> = {
 };
 
 const BUILTIN_DOCS: Record<string, string> = {
-  theme: 'The active theme\'s name. Use with match: match $theme { "Dark Modern" { ... } }',
-  type: "The active theme's type as flags: dark or light, plus contrast. Use with match: match $type { dark -> ... }",
+  theme: 'The active theme\'s name. Use with match: match($theme) { "Dark Modern" { ... } }',
+  type: "The active theme's type as flags: dark or light, plus contrast. Use with match: match($type) { dark -> ... }",
   none: "No rule for this selector, e.g. enum = $none",
 };
 
@@ -147,7 +147,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
   const matchSnippet = (asValue: boolean) =>
     snippet(
       "match",
-      asValue ? "match \\$${1|type,theme|} {\n\t${2:dark} -> $3\n\t_ -> $4\n}" : "match \\$${1|type,theme|} {\n\t${2:dark} {\n\t\t$3\n\t}\n}",
+      asValue ? "match(\\$${1|type,theme|}) {\n\t${2:dark} -> $3\n\t_ -> $4\n}" : "match(\\$${1|type,theme|}) {\n\t${2:dark} {\n\t\t$3\n\t}\n}",
       vscode.CompletionItemKind.Keyword,
       asValue ? "Choose a value by theme type or name" : "Rules for matching themes",
     );
@@ -177,7 +177,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
 
     vscode.languages.registerHoverProvider(selector, {
       provideHover(doc, pos) {
-        const range = doc.getWordRangeAtPosition(pos, /\$?[A-Za-z_*][\w.:-]*/);
+        const range = doc.getWordRangeAtPosition(pos, /[$@]?[A-Za-z_*][\w.:-]*/);
         if (!range) return undefined;
         const line = doc.lineAt(pos.line).text;
         const commentAt = line.indexOf(";");
@@ -198,6 +198,12 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
             const c = result?.variables.get(name);
             md.appendMarkdown(c ? `**${word}** = \`${toHex(c)}\`` : `**${word}** is undefined or has an error`);
           }
+          return new vscode.Hover(md, range);
+        }
+
+        if (word.startsWith("@")) {
+          const e = parseRulesFile(doc.getText()).expressions.get(word.slice(1));
+          md.appendMarkdown(e ? `**${word}**: \`${conditionText(stripCondition(e.cond))}\`` : `**${word}** is undefined or has an error`);
           return new vscode.Hover(md, range);
         }
 
@@ -246,6 +252,15 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
           const where = cursorContext(doc.getText(new vscode.Range(0, 0, pos.line, pos.character)));
           if (where.kind === "none") return undefined;
 
+          if (where.kind === "expression") {
+            return [...parseRulesFile(doc.getText()).expressions].map(([name, e]) => {
+              const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+              item.detail = conditionText(stripCondition(e.cond));
+              item.range = new vscode.Range(pos.line, pos.character - where.typed.length, pos.line, pos.character);
+              return item;
+            });
+          }
+
           if (where.kind === "variable") {
             const vars = analyze(doc)?.variables ?? new Map<string, Color>();
             const items = [...vars].map(([name, c]) => {
@@ -288,6 +303,12 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               ...uiColorItems(resolver),
               matchSnippet(false),
               snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
+              snippet("contains", 'contains(text("${1:__slots__}") ${2:variable.classMember}) ${3:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a symbol (class, function, ...) that directly contains a matching token"),
+              snippet("within", "within(${1:class}) ${2:method}", vscode.CompletionItemKind.Keyword, "Only tokens inside a symbol (class, function, ...) whose name matches"),
+              snippet("inherits", 'inherits(${1:contains(text("__slots__") variable.classMember)}) ${2:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a type with a base type (directly or further up) whose name matches; uses the language server's type hierarchy"),
+              snippet("@name", "@${1:name} => ${2:contains(text(\"__slots__\") variable.classMember)}", vscode.CompletionItemKind.Keyword, "A named selector expression, used in heads as @name: @name class = ..."),
+              snippet("text", 'text("${1:__slots__}") ${2:variable}', vscode.CompletionItemKind.Keyword, 'Only tokens with this text ("*" wildcards), drawn over the language server\'s tokens'),
+              snippet("language", "language(${1:python}) {\n\t$2\n}", vscode.CompletionItemKind.Keyword, "Rules for one or more languages: language(python, csharp)"),
               snippet("ui", "ui {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules for UI colors, e.g. editorBracketHighlight.foreground1"),
               snippet("semantic", "semantic {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Only semantic rules, without their TextMate fallback scope"),
               snippet("textmate", "textmate {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Names taken literally as TextMate scopes"),
@@ -310,6 +331,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
         },
       },
       "$",
+      "@",
       "(",
       ",",
       "|",
@@ -335,7 +357,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
 function ruleAt(stmts: Stmt[], pos: vscode.Position): Rule | undefined {
   for (const st of stmts) {
     if (st.kind === "rule" && st.selectorRange.start.line === pos.line && st.selectorRange.start.col === pos.character) return st;
-    const bodies = st.kind === "override" || st.kind === "target" ? [st.body] : st.kind === "block" ? st.arms.map((a) => a.body) : [];
+    const bodies = st.kind === "override" || st.kind === "target" || st.kind === "when" ? [st.body] : st.kind === "block" ? st.arms.map((a) => a.body) : [];
     for (const body of bodies) {
       const found = ruleAt(body, pos);
       if (found) return found;
@@ -347,6 +369,7 @@ function ruleAt(stmts: Stmt[], pos: vscode.Position): Rule | undefined {
 type CursorContext =
   | { kind: "none" }
   | { kind: "variable"; typed: string }
+  | { kind: "expression"; typed: string }
   | { kind: "pattern"; subject: string }
   | { kind: "selector" }
   | { kind: "value"; value: string };
@@ -363,7 +386,7 @@ function cursorContext(before: string): CursorContext {
   const stack: ({ kind: "match"; subject: string } | { kind: "arm" })[] = [];
   for (let i = 0; i < text.length; i++) {
     if (text[i] === "{") {
-      const m = /match\s+\$(\w+)\s*$/.exec(text.slice(0, i));
+      const m = /match\s*\(\s*\$(\w+)\s*\)\s*$/.exec(text.slice(0, i));
       stack.push(m ? { kind: "match", subject: m[1] } : { kind: "arm" });
     } else if (text[i] === "}") {
       stack.pop();
@@ -372,6 +395,8 @@ function cursorContext(before: string): CursorContext {
 
   const v = /\$([\w-]*)$/.exec(current);
   if (v) return { kind: "variable", typed: v[1] };
+  const at = /@([\w-]*)$/.exec(current);
+  if (at) return { kind: "expression", typed: at[1] };
 
   const line = lines[lines.length - 1];
   const top = stack[stack.length - 1];
@@ -380,6 +405,8 @@ function cursorContext(before: string): CursorContext {
     if (arrow >= 0) return { kind: "value", value: line.slice(arrow + 2) };
     return { kind: "pattern", subject: top.subject };
   }
+  // "@name => head": the right side is a head, not a value.
+  if (line.includes("=>")) return { kind: "selector" };
   const eq = /=/.exec(line);
   if (eq) return { kind: "value", value: line.slice(eq.index + eq[0].length) };
   return { kind: "selector" };

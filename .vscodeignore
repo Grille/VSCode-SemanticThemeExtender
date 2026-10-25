@@ -7,3 +7,4 @@ tsconfig.json
 theme_extension.cfg
 *.vsix
 scripts/**
+examples/**

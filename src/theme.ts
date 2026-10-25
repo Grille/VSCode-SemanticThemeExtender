@@ -166,6 +166,7 @@ export class TokenRegistry {
   private types = new Set<string>(STANDARD_TYPES);
   private modifiers = new Set<string>(STANDARD_MODIFIERS);
   private uiColors = new Map<string, UiDefaults>(Object.entries(UI_COLORS));
+  private languages = new Set<string>();
 
   constructor() {
     for (const ext of vscode.extensions.all) {
@@ -178,6 +179,9 @@ export class TokenRegistry {
       }
       for (const m of c?.semanticTokenModifiers ?? []) {
         if (m?.id) this.modifiers.add(m.id);
+      }
+      for (const lang of c?.languages ?? []) {
+        if (typeof lang?.id === "string") this.languages.add(lang.id);
       }
       for (const col of c?.colors ?? []) {
         if (typeof col?.id !== "string") continue;
@@ -268,6 +272,11 @@ export class TokenRegistry {
   /** All known token types: VS Code's standard ones plus those contributed by extensions. */
   allTypes(): string[] {
     return [...this.types].sort();
+  }
+
+  /** Language IDs contributed by VS Code's and installed extensions. */
+  isLanguage(id: string): boolean {
+    return this.languages.has(id);
   }
 
   /** UI color IDs from VS Code and installed extensions. */

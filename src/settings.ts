@@ -32,20 +32,10 @@ export interface Customizations {
 
 const clone = (v: Settings | undefined): Settings => JSON.parse(JSON.stringify(v ?? {}));
 
-/** Older versions stored only semantic keys, as section -> keys. */
+/** The stored ownership, with every part present. */
 export function normalizeOwned(raw: unknown): Owned {
-  const o = (raw ?? {}) as Partial<Owned> & Record<string, unknown>;
-  if (o.semantic || o.textMate || o.enabled || o.ui) {
-    return { semantic: o.semantic ?? {}, enabled: o.enabled ?? [], textMate: o.textMate ?? {}, ui: o.ui ?? {} };
-  }
-  const semantic: Record<string, string[]> = {};
-  const enabled: string[] = [];
-  for (const [section, keys] of Object.entries(o)) {
-    if (!Array.isArray(keys)) continue;
-    semantic[section] = keys.filter((k) => k !== "$enabled");
-    if (keys.includes("$enabled")) enabled.push(section);
-  }
-  return { semantic, enabled, textMate: {}, ui: {} };
+  const o = (raw ?? {}) as Partial<Owned>;
+  return { semantic: o.semantic ?? {}, enabled: o.enabled ?? [], textMate: o.textMate ?? {}, ui: o.ui ?? {} };
 }
 
 const dropEmpty = (settings: Settings, section: string) => {

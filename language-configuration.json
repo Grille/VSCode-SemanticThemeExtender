@@ -6,5 +6,5 @@
     { "open": "[", "close": "]" }
   ],
   "surroundingPairs": [["(", ")"], ["[", "]"]],
-  "wordPattern": "\\$?[\\w.:-]+|#[0-9a-fA-F]+"
+  "wordPattern": "[$@]?[\\w.:-]+|#[0-9a-fA-F]+"
 }

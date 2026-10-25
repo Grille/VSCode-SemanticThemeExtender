@@ -28,7 +28,7 @@ export class CycleError extends EvalError {}
 export class NoMatch extends Error {}
 
 // Away from / toward the background: lighter on dark themes, darker on light ones. Uses the same
-// dark / light flags as match $type, so both always agree.
+// dark / light flags as match($type), so both always agree.
 const onDark = (ctx: EvalContext) => ctx.flags.has("dark");
 const emphasize = (ctx: EvalContext, c: Color, amount = 0.1) =>
   onDark(ctx) ? color.lighten(c, amount) : color.darken(c, amount);

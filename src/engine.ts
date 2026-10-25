@@ -10,7 +10,8 @@
 // (string.quoted.docstring.python) is a TextMate scope and only produces that. ui / semantic /
 // textmate say the kind explicitly; an explicit semantic rule leaves the TextMate fallback alone.
 
-import { Expr, Flag, matchesPattern, Problem, Range, RulesFile, Stmt, Value, VarDecl } from "./cfg";
+import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, Rule, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
+import { planRule } from "./plan";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
 import { ThemeResolver } from "./theme";
@@ -23,6 +24,17 @@ export interface TextMateSettings {
   foreground?: string;
   fontStyle?: string;
 }
+
+/**
+ * A rule drawn as editor decorations over the language server's tokens, not written to settings:
+ * its head is more than a plain selector (text, contains, !, ...).
+ */
+export interface TextRule {
+  when: TokenCondition;
+  style: StyleValue;
+}
+
+
 
 export interface ColorSpan {
   range: Range;
@@ -37,6 +49,8 @@ export interface CompileResult {
   textMate: Record<string, TextMateSettings>;
   /** UI color ID -> color, for workbench.colorCustomizations. */
   ui: Record<string, string>;
+  /** Text-filtered rules in file order; later ones win where several match a token. */
+  textRules: TextRule[];
   log: string[];
   problems: Problem[];
   colors: ColorSpan[];
@@ -60,7 +74,7 @@ function toTextMate(value: StyleValue): TextMateSettings {
 
 export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult {
   const flags = resolver.flags;
-  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
+  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
   const registry = resolver.registry;
   const failed = new Set<string>();
   const resolving = new Set<string>();
@@ -179,28 +193,24 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
 
   const hasStyle = (v: Value): boolean => v.kind === "style" || (v.kind === "match" && v.arms.some((a) => hasStyle(a.body)));
 
+  // The rule's head together with the heads of enclosing blocks.
+  const headOf = (st: Rule): Cond => (st.when ? { kind: "and", left: st.when, right: st.head, range: st.head.range } : st.head);
+
   const check = (stmts: Stmt[]) => {
     for (const st of stmts) {
       if (st.kind === "var") checkVariable(st);
       else if (st.kind === "rule") {
-        const kind = registry.classify(st.selector, st.target);
-        if (!kind) {
-          const message = registry.unknownNameMessage(st.selector, st.target);
-          result.problems.push({
-            range: st.selectorRange,
-            message: message.startsWith("Unknown token type") && !st.target
-              ? `${message}: this rule has no effect. TextMate scopes contain a dot, e.g. string.quoted`
-              : `${message}; this rule has no effect`,
-            // A typo under an explicit kind is certain; without one it might be a scope we don't know.
-            warning: !st.target,
-          });
-        }
-        if (kind === "ui" && hasStyle(st.value)) {
+        const plan = planRule(headOf(st), st.target, registry);
+        result.problems.push(...plan.problems);
+        if (plan.names?.some((n) => registry.classify(n, st.target) === "ui") && hasStyle(st.value)) {
           result.problems.push({ range: st.selectorRange, message: "UI colors take a color; style() only applies to tokens" });
         }
         checkValue(st.value);
-      } else if (st.kind === "override" || st.kind === "target") check(st.body);
-      else st.arms.forEach((a) => check(a.body));
+      } else if (st.kind === "when" || st.kind === "override" || st.kind === "target") {
+        check(st.body);
+      } else if (st.kind === "block") {
+        st.arms.forEach((a) => check(a.body));
+      }
     }
   };
   check(file.stmts);
@@ -236,7 +246,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         apply(st.body, true);
         continue;
       }
-      if (st.kind === "target") {
+      if (st.kind === "target" || st.kind === "when") {
         apply(st.body, override);
         continue;
       }
@@ -254,56 +264,81 @@ export function compile(file: RulesFile, resolver: ThemeResolver): CompileResult
         result.log.push(`skip  ${st.selector} (line ${line}): no match arm applies to this theme`);
         continue;
       }
-      const kind = registry.classify(st.selector, st.target);
-      if (!kind) {
-        result.log.push(`skip  ${st.selector} (line ${line}): ${registry.unknownNameMessage(st.selector, st.target)}`);
-        continue;
-      }
-      if (kind === "ui") {
-        const id = st.selector;
+      const plan = planRule(headOf(st), st.target, registry);
+      if (plan.decoration) {
+        const when = stripCondition(plan.decoration);
+        const key = JSON.stringify(when);
+        const name = conditionText(when);
+        result.textRules = result.textRules.filter((r) => JSON.stringify(r.when) !== key);
         if (value === NONE) {
-          delete result.ui[id];
-          result.log.push(`none  ${st.selector} (line ${line})`);
-        } else if (typeof value !== "string") {
-          result.log.push(`error ${st.selector} (line ${line}): UI colors take a color, not style()`);
-        } else if (!override && resolver.theme.colors[id] !== undefined) {
-          result.log.push(`skip  ${st.selector} (line ${line}): theme already defines it (colors["${id}"]); use override to replace it`);
+          result.log.push(`none  ${name} (line ${line})`);
         } else {
-          result.ui[id] = value;
-          result.log.push(`set   ${st.selector} = ${value}  (line ${line})`);
+          result.textRules.push({ when, style: value });
+          result.log.push(`deco  ${name} = ${JSON.stringify(value)}  (line ${line})`);
         }
         continue;
       }
-      const semantic = kind === "semantic";
-      // An explicit semantic rule is only the semantic rule.
-      const scopes = !semantic ? [st.selector] : st.target ? [] : registry.ownScopes(st.selector);
+      for (const name of plan.names ?? []) applyName(name, st.target, value, override, line);
+    }
+  };
+
+  // A rule for one plain name: a semantic selector (plus its TextMate fallback), a TextMate scope or a UI color.
+  const applyName = (selector: string, target: NameKind | undefined, value: StyleValue | typeof NONE, override: boolean, line: number) => {
+    const kind = registry.classify(selector, target);
+    if (!kind) {
+      result.log.push(`skip  ${selector} (line ${line}): ${registry.unknownNameMessage(selector, target)}`);
+      return;
+    }
+    if (kind === "ui") {
+      const id = selector;
       if (value === NONE) {
-        delete result.rules[st.selector];
-        scopes.forEach((s) => delete result.textMate[s]);
-        result.log.push(`none  ${st.selector} (line ${line})`);
+        delete result.ui[id];
+        result.log.push(`none  ${selector} (line ${line})`);
+      } else if (typeof value !== "string") {
+        result.log.push(`error ${selector} (line ${line}): UI colors take a color, not style()`);
+      } else if (!override && resolver.theme.colors[id] !== undefined) {
+        result.log.push(`skip  ${selector} (line ${line}): theme already defines it (colors["${id}"]); use override to replace it`);
+      } else {
+        result.ui[id] = value;
+        result.log.push(`set   ${selector} = ${value}  (line ${line})`);
+      }
+      return;
+    }
+    const semantic = kind === "semantic";
+    // An explicit semantic rule is only the semantic rule.
+    const scopes = !semantic ? [selector] : target ? [] : registry.ownScopes(selector);
+    if (value === NONE) {
+      delete result.rules[selector];
+      scopes.forEach((s) => delete result.textMate[s]);
+      result.log.push(`none  ${selector} (line ${line})`);
+      return;
+    }
+    if (semantic) {
+      const own = override ? undefined : resolver.exactSemanticRule(selector);
+      if (own) {
+        result.log.push(`skip  ${selector} (line ${line}): theme already defines it (${own.source}); use override to replace it`);
+        return;
+      }
+      result.rules[selector] = value;
+      result.log.push(`set   ${selector} = ${JSON.stringify(value)}  (line ${line})`);
+    }
+    for (const scope of scopes) {
+      if (!override && resolver.hasTextMateRule(scope)) {
+        result.log.push(`skip  TextMate ${scope} (line ${line}): theme colors this scope itself`);
         continue;
       }
-      if (semantic) {
-        const own = override ? undefined : resolver.exactSemanticRule(st.selector);
-        if (own) {
-          result.log.push(`skip  ${st.selector} (line ${line}): theme already defines it (${own.source}); use override to replace it`);
-          continue;
-        }
-        result.rules[st.selector] = value;
-        result.log.push(`set   ${st.selector} = ${JSON.stringify(value)}  (line ${line})`);
-      }
-      for (const scope of scopes) {
-        if (!override && resolver.hasTextMateRule(scope)) {
-          result.log.push(`skip  TextMate ${scope} (line ${line}): theme colors this scope itself`);
-          continue;
-        }
-        result.textMate[scope] = toTextMate(value);
-        result.log.push(`set   TextMate ${scope} = ${JSON.stringify(result.textMate[scope])}  (line ${line})`);
-      }
+      result.textMate[scope] = toTextMate(value);
+      result.log.push(`set   TextMate ${scope} = ${JSON.stringify(result.textMate[scope])}  (line ${line})`);
     }
   };
   apply(file.stmts, false);
 
+  // An expression used several times reports its problems once, at the declaration.
+  const seen = new Set<string>();
+  result.problems = result.problems.filter((p) => {
+    const key = `${p.range.start.line}:${p.range.start.col}:${p.range.end.line}:${p.range.end.col}:${p.message}`;
+    return !seen.has(key) && !!seen.add(key);
+  });
   for (const p of result.problems) {
     if (!p.warning) result.log.push(`error line ${p.range.start.line + 1}: ${p.message}`);
   }
