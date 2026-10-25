@@ -14,7 +14,7 @@
       }
     },
     { "match": "\\boverride(?!\\s*=)(?=\\s*[{A-Za-z_*$])", "name": "keyword.control.override.semantic-theme-rules" },
-    { "match": "\\b(?:contains|within|inherits)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
+    { "match": "\\b(?:contains|within|inherits|decorated)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
     { "match": "\\b(?:text|doc|signature)(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
     { "match": "@[\\w-]*", "name": "entity.name.function.expression.semantic-theme-rules" },
     { "match": "\\blanguage(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },

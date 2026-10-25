@@ -12,6 +12,7 @@
 - UI colors by their ID, read and written, e.g. bracket pair colors derived from the theme.
 - Rule heads are selector expressions: `struct | enum`, `language(python) selfParameter`, `text(...)`, `contains(...)`, combined with `&` (or side by side), `|`, `!` and parentheses; plain selectors still go to settings, everything else is drawn as decorations.
 - `contains(...)`: color classes (or other symbols) by what they contain, e.g. classes defining `__slots__`, also where they're used in other files.
+- `decorated(...)`: symbols by their decorators or attributes, e.g. `decorated(text("dataclass")) class`.
 - `within(...)`: tokens inside a matching symbol; `inherits(...)`: types with a matching base type, across files, via the type hierarchy.
 - Custom modifiers: `head += slotted` gives matching tokens a modifier any rule can select (`class.slotted`), across rules files; names used in another file take over their definition's custom modifiers.
 - Regular expression literals (`/^Dark/i`) wherever a pattern is taken, next to quoted globs.

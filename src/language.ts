@@ -18,7 +18,7 @@ const STYLES = [...STYLE_NAMES];
 export const PROJECT_FILE = ".vscode/semantic-theme.str";
 export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
 
-const KEYWORDS = new Set(["match", "style", "override", "language", "text", "doc", "signature", "contains", "within", "inherits", ...NAME_KINDS, "_"]);
+const KEYWORDS = new Set(["match", "style", "override", "language", "text", "doc", "signature", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
@@ -308,6 +308,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               matchSnippet(false),
               snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
               snippet("contains", 'contains(text("${1:__slots__}") ${2:variable.classMember}) ${3:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a symbol (class, function, ...) that directly contains a matching token"),
+              snippet("decorated", 'decorated(text("${1:dataclass}")) ${2:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a symbol (class, function, ...) with a matching decorator or [Attribute]"),
               snippet("within", "within(${1:class}) ${2:method}", vscode.CompletionItemKind.Keyword, "Only tokens inside a symbol (class, function, ...) whose name matches"),
               snippet("inherits", 'inherits(${1:contains(text("__slots__") variable.classMember)}) ${2:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a type with a base type (directly or further up) whose name matches; uses the language server's type hierarchy"),
               snippet("@name", "@${1:name} => ${2:contains(text(\"__slots__\") variable.classMember)}", vscode.CompletionItemKind.Keyword, "A named selector expression, used in heads as @name: @name class = ..."),

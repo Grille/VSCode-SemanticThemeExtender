@@ -44,7 +44,7 @@ type Condition =
   /** Several patterns mean any of them. */
   | { kind: "text" | "doc" | "signature"; tests: RegExp[] }
   | { kind: "selector"; matcher: Matcher }
-  | { kind: "contains" | "within" | "inherits"; inner: Condition }
+  | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Condition }
   | { kind: "not"; operand: Condition }
   | { kind: "and" | "or"; left: Condition; right: Condition };
 
@@ -221,6 +221,7 @@ function compileCondition(c: TokenCondition): Condition {
     case "contains":
     case "within":
     case "inherits":
+    case "decorated":
       return { kind: c.kind, inner: compileCondition(c.inner) };
     case "not":
       return { kind: "not", operand: compileCondition(c.operand) };
@@ -249,7 +250,7 @@ function specificity(when: TokenCondition): number {
       language ||= !!s.language;
     } else if (c.kind === "language") language = true;
     else if (c.kind === "text") text = Math.max(text, c.patterns.some((p) => typeof p !== "string" || p.includes("*")) ? 1 : 2);
-    else if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "doc" || c.kind === "signature") symbols++;
+    else if (["contains", "within", "inherits", "decorated", "doc", "signature"].includes(c.kind)) symbols++;
     else if (c.kind === "and") {
       walk(c.left);
       walk(c.right);
@@ -265,12 +266,13 @@ const selects = (m: Matcher, t: Token, language: string) =>
 const inside = (inner: vscode.Range, outer: vscode.Range) => outer.contains(inner) && !outer.isEqual(inner);
 
 const needsSymbols = (c: Condition): boolean =>
-  c.kind === "contains" || c.kind === "within" || c.kind === "inherits" ||
+  c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "decorated" ||
   (c.kind === "not" && needsSymbols(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (needsSymbols(c.left) || needsSymbols(c.right)));
 
 const usesContains = (c: Condition): boolean =>
   c.kind === "contains" ||
+  c.kind === "decorated" ||
   ((c.kind === "within" || c.kind === "inherits") && usesContains(c.inner)) ||
   (c.kind === "not" && usesContains(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (usesContains(c.left) || usesContains(c.right)));
@@ -278,7 +280,7 @@ const usesContains = (c: Condition): boolean =>
 const usesDoc = (c: Condition): boolean =>
   c.kind === "doc" ||
   c.kind === "signature" ||
-  ((c.kind === "contains" || c.kind === "within" || c.kind === "inherits") && usesDoc(c.inner)) ||
+  ((c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "decorated") && usesDoc(c.inner)) ||
   (c.kind === "not" && usesDoc(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (usesDoc(c.left) || usesDoc(c.right)));
 
@@ -506,7 +508,8 @@ class DocData {
         if (!this.inherited.has(c)) this.inherited.set(c, this.computeInherits(c.inner));
         this.ready.set(c, await this.inherited.get(c)!);
         return;
-      case "contains": {
+      case "contains":
+      case "decorated": {
         await this.prepare(c.inner);
         const elsewhere = new Set([...this.definitions.values()].flatMap((list) => list.map((d) => d.data)));
         for (const data of elsewhere) await data.prepare(c.inner);
@@ -537,6 +540,8 @@ class DocData {
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":
         return this.ownersOf(c.inner).has(t.text) || !!this.definitions.get(t.text)?.some((d) => d.data.ownersOf(c.inner).has(d.token.text));
+      case "decorated":
+        return this.decoratedBy(c).has(t.text) || !!this.definitions.get(t.text)?.some((d) => d.data.decoratedBy(c).has(d.token.text));
       case "within":
         return this.symbols.some((s) => {
           if (!s.range.contains(t.range) || s.nameRange?.contains(t.range)) return false;
@@ -571,6 +576,30 @@ class DocData {
       // A nested method's or class's name is a member of s; only its inside is not.
       const hidden = (t: Token) => nested.some((o) => o.range.contains(t.range) && !o.nameRange?.contains(t.range));
       if (hits.some((t) => s.range.contains(t.range) && !hidden(t))) names.add(s.name);
+    }
+    return names;
+  }
+
+  /**
+   * Names of symbols with a decorator or attribute meeting c's condition: a token in the part of
+   * the symbol before its name (Python @decorators, C# [Attributes], Java @annotations, where the
+   * language server's symbol range includes them), or on the lines right above it that start
+   * with @ or [ (where it doesn't). Matched by text like contains(); cached under c itself, so it
+   * is cleared along with contains() answers.
+   */
+  private decoratedBy(c: Condition & { inner: Condition }): Set<string> {
+    let names = this.owners.get(c);
+    if (names) return names;
+    names = new Set<string>();
+    this.owners.set(c, names);
+    for (const s of this.symbols) {
+      if (!s.nameRange || names.has(s.name)) continue;
+      let first = s.range.start.line;
+      while (first > 0 && /^\s*[@[]/.test(this.doc.lineAt(first - 1).text)) first--;
+      const name = s.nameRange.start;
+      const header = (t: Token) =>
+        t.range.start.isBefore(name) && (s.range.contains(t.range) || (t.range.start.line >= first && t.range.start.line < s.range.start.line));
+      if (this.tokens.some((t) => header(t) && this.test(c.inner, t))) names.add(s.name);
     }
     return names;
   }

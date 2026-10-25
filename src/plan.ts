@@ -85,7 +85,7 @@ function atoms(c: Cond, out: Cond[] = []): Cond[] {
     atoms(c.right, out);
   } else {
     out.push(c);
-    if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits") atoms(c.inner, out);
+    if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "decorated") atoms(c.inner, out);
   }
   return out;
 }
