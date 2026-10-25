@@ -18,7 +18,7 @@ const STYLES = [...STYLE_NAMES];
 export const PROJECT_FILE = ".vscode/semantic-theme.str";
 export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
 
-const KEYWORDS = new Set(["match", "style", "override", "language", "text", "contains", "within", "inherits", ...NAME_KINDS, "_"]);
+const KEYWORDS = new Set(["match", "style", "override", "language", "text", "doc", "contains", "within", "inherits", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
@@ -311,6 +311,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               snippet("within", "within(${1:class}) ${2:method}", vscode.CompletionItemKind.Keyword, "Only tokens inside a symbol (class, function, ...) whose name matches"),
               snippet("inherits", 'inherits(${1:contains(text("__slots__") variable.classMember)}) ${2:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a type with a base type (directly or further up) whose name matches; uses the language server's type hierarchy"),
               snippet("@name", "@${1:name} => ${2:contains(text(\"__slots__\") variable.classMember)}", vscode.CompletionItemKind.Keyword, "A named selector expression, used in heads as @name: @name class = ..."),
+              snippet("doc", 'doc("${1:*deprecated*}") ${2:function}', vscode.CompletionItemKind.Keyword, 'Only tokens whose documentation (the hover, without code) matches; "*" wildcards, any case'),
               snippet("text", 'text("${1:__slots__}") ${2:variable}', vscode.CompletionItemKind.Keyword, 'Only tokens with this text ("*" wildcards), drawn over the language server\'s tokens'),
               snippet("language", "language(${1:python}) {\n\t$2\n}", vscode.CompletionItemKind.Keyword, "Rules for one or more languages: language(python, csharp)"),
               snippet("ui", "ui {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules for UI colors, e.g. editorBracketHighlight.foreground1"),

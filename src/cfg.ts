@@ -4,6 +4,8 @@
 //   $name = color                      variable: top level only, assigned once, usable anywhere
 //   head += slotted, other             custom modifiers: matching tokens get them, as if the language
 //                                      server had reported them; class.slotted selects them anywhere
+//   head := warn("{text} ...")         a message on every matching token: error, warn, info or hint
+//   doc("*deprecated*")                in a head: tokens whose hover documentation matches
 //   @name => head                      a named selector expression, used as @name in heads:
 //                                      @slots => contains(text("__slots__") variable.classMember)
 //                                      @slots class = ...; top level only, assigned once, usable anywhere
@@ -129,6 +131,22 @@ export interface TagRule {
   modifiers: string[];
 }
 
+export type Severity = "error" | "warn" | "info" | "hint";
+export const SEVERITIES: Severity[] = ["error", "warn", "info", "hint"];
+
+/** head := warn("..."): a message in the editor on every token the head matches. */
+export interface MessageRule {
+  kind: "message";
+  head: Cond;
+  selector: string;
+  selectorRange: Range;
+  target?: NameKind;
+  when?: Cond;
+  severity: Severity;
+  /** {text} stands for the token's text. */
+  message: string;
+}
+
 export interface Override {
   kind: "override";
   body: Stmt[];
@@ -154,7 +172,8 @@ export interface Target {
 export type Cond =
   | { kind: "selector"; selector: string; range: Range }
   | { kind: "language"; ids: string[]; range: Range }
-  | { kind: "text"; globs: string[]; range: Range }
+  /** text: the token's own text; doc: the prose of its hover (its documentation). */
+  | { kind: "text" | "doc"; globs: string[]; range: Range }
   | { kind: "contains" | "within" | "inherits"; inner: Cond; range: Range }
   | { kind: "not"; operand: Cond; range: Range }
   | { kind: "and" | "or"; left: Cond; right: Cond; range: Range }
@@ -164,7 +183,7 @@ export type Cond =
 export type TokenCondition =
   | { kind: "selector"; selector: string }
   | { kind: "language"; ids: string[] }
-  | { kind: "text"; globs: string[] }
+  | { kind: "text" | "doc"; globs: string[] }
   | { kind: "contains" | "within" | "inherits"; inner: TokenCondition }
   | { kind: "not"; operand: TokenCondition }
   | { kind: "and" | "or"; left: TokenCondition; right: TokenCondition };
@@ -177,7 +196,8 @@ export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]
     case "language":
       return `language(${c.ids.join(", ")})`;
     case "text":
-      return `text(${c.globs.map((g) => `"${g}"`).join(", ")})`;
+    case "doc":
+      return `${c.kind}(${c.globs.map((g) => `"${g}"`).join(", ")})`;
     case "contains":
     case "within":
     case "inherits":
@@ -203,7 +223,8 @@ export function stripCondition(c: Cond): TokenCondition {
     case "language":
       return { kind: "language", ids: c.ids };
     case "text":
-      return { kind: "text", globs: c.globs };
+    case "doc":
+      return { kind: c.kind, globs: c.globs };
     case "contains":
     case "within":
     case "inherits":
@@ -233,7 +254,7 @@ export interface Block {
   range: Range;
 }
 
-export type Stmt = VarDecl | ExpressionDecl | Rule | TagRule | Block | Override | Target | WhenBlock;
+export type Stmt = VarDecl | ExpressionDecl | Rule | TagRule | MessageRule | Block | Override | Target | WhenBlock;
 
 export interface RulesFile {
   stmts: Stmt[];
@@ -314,7 +335,7 @@ class ParseError extends Error {
 }
 
 const TOKEN_RE =
-  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.:]|-(?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|\+=|[=(),!|&{}*])/y;
+  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.]|[:-](?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|\+=|:=|[=(),!|&{}*])/y;
 
 function tokenize(text: string, problems: Problem[]): Token[] {
   const tokens: Token[] = [];
@@ -521,12 +542,13 @@ export function parseRulesFile(text: string): RulesFile {
     }
     if (t?.type === "var") fail(`$${t.text} is a color; named selector expressions start with @: @${t.text || "name"} => ...`, t);
     const call = (name: string) => t?.type === "ident" && t.text === name && isPunct(peek(1), "(");
-    if (call("text")) {
+    for (const kind of ["text", "doc"] as const) {
+      if (!call(kind)) continue;
       next();
       next();
-      const globs = parseList("string", 'the token text in quotes, e.g. text("__slots__")');
-      const close = expect(")", "')' to close text(...)");
-      return { kind: "text", globs, range: span(t.range, close.range) };
+      const globs = parseList("string", kind === "text" ? 'the token text in quotes, e.g. text("__slots__")' : 'a pattern for the documentation in quotes, e.g. doc("*deprecated*")');
+      const close = expect(")", `')' to close ${kind}(...)`);
+      return { kind, globs, range: span(t.range, close.range) };
     }
     if (call("language")) {
       next();
@@ -550,7 +572,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return { kind: "selector", selector: t.text, range: t.range };
     }
-    return fail("Expected a selector, text(...), language(...), contains(...), within(...), inherits(...), @expression, '!' or '('");
+    return fail("Expected a selector, text(...), doc(...), language(...), contains(...), within(...), inherits(...), @expression, '!' or '('");
   }
 
   // ---- color expressions
@@ -598,7 +620,7 @@ export function parseRulesFile(text: string): RulesFile {
         if (t.text === "style") fail("style() must wrap the whole value, e.g. style(mix(class, function), bold)", t);
         if (!FUNCTION_NAMES.has(t.text)) {
           const flagNext = peek(1) && (isPunct(peek(1), "!") || (peek(1).type === "ident" && STYLE_NAMES.has(peek(1).text)));
-          if (["text", "language", "contains", "within", "inherits"].includes(t.text)) {
+          if (["text", "doc", "language", "contains", "within", "inherits"].includes(t.text)) {
             fail(`${t.text}(...) is part of a selector expression, not a color; name one with @name => ${t.text}(...)`, t);
           }
           fail(`Unknown function '${t.text}'${flagNext ? `. For font styles write style(${t.text}, ...)` : ""}`, t);
@@ -849,7 +871,30 @@ export function parseRulesFile(text: string): RulesFile {
         } while (isPunct(peek(), ",") && next());
         return { kind: "tag", head, selector: conditionText(stripCondition(head)), selectorRange: head.range, target: target?.kind, when, modifiers };
       }
-      return fail(`Expected '=' or '+=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
+      if (isPunct(n, ":=")) {
+        next();
+        const fn = peek();
+        const usage = 'Expected warn("message"), or error, info or hint; {text} in the message is the token';
+        if (fn?.type !== "ident" || !(SEVERITIES as string[]).includes(fn.text) || !isPunct(peek(1), "(") || !sameLine(n, fn)) fail(usage, fn && sameLine(n, fn) ? fn : n);
+        next();
+        next();
+        const text = peek();
+        if (text?.type !== "string") fail(usage, text);
+        next();
+        if (!isPunct(peek(), ")") || !sameLine(text, peek())) fail(`Expected ')' to close ${fn.text}(...)`, sameLine(text, peek()) ? peek() : text);
+        next();
+        return {
+          kind: "message",
+          head,
+          selector: conditionText(stripCondition(head)),
+          selectorRange: head.range,
+          target: target?.kind,
+          when,
+          severity: fn.text as Severity,
+          message: text.text,
+        };
+      }
+      return fail(`Expected '=', '+=' or ':=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
     }
     return fail("Expected a rule (selector = value), a variable ($name = value), an expression (@name => head), a match, or an override / ui / semantic / textmate block");
   }
@@ -969,7 +1014,8 @@ export function parseRulesFile(text: string): RulesFile {
     return stmts.flatMap((st): Stmt[] => {
       switch (st.kind) {
         case "rule":
-        case "tag": {
+        case "tag":
+        case "message": {
           const head = resolve(st.head);
           const when = st.when && resolve(st.when);
           return head && (!st.when || when) ? [{ ...st, head, when }] : [];
@@ -1020,6 +1066,8 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   $name = color            variable: top level, assigned once, use as $name
 ;   head += slotted          custom modifiers for matching tokens; class.slotted = ... colors them,
 ;                            in any rules file (variable, string, comment, keyword: *.slotted)
+;   head := warn("{text} ...")  a message on matching tokens in open files: error warn info hint
+;   doc("*deprecated*") x    only tokens whose documentation (hover, without code) matches
 ;   @name => head            a named selector expression, used in heads: @name class = ...
 ;
 ;   class, function, ...     the active theme's color for a semantic token type

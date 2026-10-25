@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { DEFAULT_RULES, parseRulesFile } from "./cfg";
-import { DrawRule, DrawTag, TokenDecorator } from "./decorations";
+import { DrawMessage, DrawRule, DrawTag, TokenDecorator } from "./decorations";
 import { compile } from "./engine";
 import { LANGUAGE_ID, PROJECT_FILE, registerLanguage } from "./language";
 import { Customizations, normalizeOwned, SEMANTIC_SETTING, strip, TEXTMATE_SETTING, UI_SETTING, write } from "./settings";
@@ -156,8 +156,8 @@ async function openProjectRules() {
 }
 
 /** Each trusted workspace folder's project rules, as saved on disk. */
-async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags: DrawTag[] }> {
-  const out = { rules: [] as DrawRule[], tags: [] as DrawTag[] };
+async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags: DrawTag[]; messages: DrawMessage[] }> {
+  const out = { rules: [] as DrawRule[], tags: [] as DrawTag[], messages: [] as DrawMessage[] };
   if (!vscode.workspace.isTrusted) return out;
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const uri = vscode.Uri.joinPath(folder.uri, PROJECT_FILE);
@@ -172,6 +172,7 @@ async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags
     const file = vscode.workspace.asRelativePath(uri);
     out.rules.push(...result.textRules.map((t) => ({ ...t, folder: folder.uri.toString(), file })));
     out.tags.push(...result.tagRules.map((t) => ({ ...t, folder: folder.uri.toString(), file })));
+    out.messages.push(...result.messageRules.map((m) => ({ ...m, folder: folder.uri.toString(), file })));
   }
   return out;
 }
@@ -236,10 +237,11 @@ async function apply(verbose = false) {
   const project = await projectRules(r);
   const drawn: DrawRule[] = [...result.textRules.map((t) => ({ ...t, file: "global rules" })), ...project.rules];
   const tags: DrawTag[] = [...result.tagRules.map((t) => ({ ...t, file: "global rules" })), ...project.tags];
-  const textRules = JSON.stringify([drawn, tags]);
+  const messages: DrawMessage[] = [...result.messageRules.map((m) => ({ ...m, file: "global rules" })), ...project.messages];
+  const textRules = JSON.stringify([drawn, tags, messages]);
   if (textRules !== lastTextRules) {
     lastTextRules = textRules;
-    decorator.update(drawn, tags);
+    decorator.update(drawn, tags, messages);
   }
 
   // Store ownership first: if a write fails half way, the next apply can still clean up.

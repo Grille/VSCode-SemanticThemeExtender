@@ -15,7 +15,7 @@
 // decorations like every other head, and UI colors and TextMate scopes are errors. It is meant for
 // += (what tokens are); colors there are drawn but warned about, they belong in the global rules.
 
-import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, RulesFile, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
+import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, RulesFile, Severity, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
 import { planRule } from "./plan";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
@@ -48,6 +48,14 @@ export interface TagRule {
   line: number;
 }
 
+/** head := warn("..."): a diagnostic on every matching token of an open document. */
+export interface MessageRule {
+  when: TokenCondition;
+  severity: Severity;
+  message: string;
+  line: number;
+}
+
 
 
 export interface ColorSpan {
@@ -67,6 +75,7 @@ export interface CompileResult {
   textRules: TextRule[];
   /** Custom modifier assignments for the active theme, in file order. */
   tagRules: TagRule[];
+  messageRules: MessageRule[];
   log: string[];
   problems: Problem[];
   colors: ColorSpan[];
@@ -95,7 +104,7 @@ export interface CompileOptions {
 
 export function compile(file: RulesFile, resolver: ThemeResolver, options: CompileOptions = {}): CompileResult {
   const flags = resolver.flags;
-  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], tagRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
+  const result: CompileResult = { rules: {}, textMate: {}, ui: {}, textRules: [], tagRules: [], messageRules: [], log: [], problems: [...file.problems], colors: [], variables: new Map(), flags };
   const registry = resolver.registry;
   const failed = new Set<string>();
   const resolving = new Set<string>();
@@ -231,10 +240,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
   const check = (stmts: Stmt[]) => {
     for (const st of stmts) {
       if (st.kind === "var") checkVariable(st);
-      else if (st.kind === "tag") {
-        // Only semantic tokens have modifiers; checked like the head of a drawn rule.
+      else if (st.kind === "tag" || st.kind === "message") {
+        // Only semantic tokens have modifiers or get messages; checked like the head of a drawn rule.
         if (st.target && st.target !== "semantic") {
-          result.problems.push({ range: st.selectorRange, message: "Modifiers can only be added to semantic tokens" });
+          result.problems.push({
+            range: st.selectorRange,
+            message: st.kind === "tag" ? "Modifiers can only be added to semantic tokens" : "Messages can only be put on semantic tokens",
+          });
         } else {
           result.problems.push(...planRule(headOf(st), "semantic", registry, assigned).problems);
         }
@@ -307,6 +319,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
         const when = stripCondition(headOf(st));
         result.tagRules.push({ when, modifiers: st.modifiers, line: st.selectorRange.start.line + 1 });
         result.log.push(`tag   ${conditionText(when)} += ${st.modifiers.join(", ")}  (line ${st.selectorRange.start.line + 1})`);
+        continue;
+      }
+      if (st.kind === "message") {
+        if (st.target && st.target !== "semantic") continue;
+        const when = stripCondition(headOf(st));
+        result.messageRules.push({ when, severity: st.severity, message: st.message, line: st.selectorRange.start.line + 1 });
+        result.log.push(`msg   ${conditionText(when)} := ${st.severity}("${st.message}")  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }
       if (st.kind !== "rule") continue;

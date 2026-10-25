@@ -9,10 +9,11 @@
 // order (global rules, then the project's), so later heads and every drawn rule can select them.
 // In a document on screen, a token whose definition is in another workspace file also takes over
 // the custom modifiers that definition got there, and contains() is answered for it there.
+// doc() matches the prose of a token's hover; hovers are asked for in that same second pass.
 
 import * as vscode from "vscode";
 import { conditionText, globToRegExp, TokenCondition } from "./cfg";
-import { StyleValue, TagRule, TextRule } from "./engine";
+import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
 import { parseSelector, TokenRegistry } from "./theme";
 
 // Redraw this long after an edit; a document that just came into view is drawn right away.
@@ -39,7 +40,7 @@ interface Matcher {
 /** A condition ready to evaluate: texts as regular expressions, selectors parsed. */
 type Condition =
   | { kind: "language"; ids: string[] }
-  | { kind: "text"; text: RegExp }
+  | { kind: "text" | "doc"; text: RegExp }
   | { kind: "selector"; matcher: Matcher }
   | { kind: "contains" | "within" | "inherits"; inner: Condition }
   | { kind: "not"; operand: Condition }
@@ -59,6 +60,27 @@ export interface DrawTag extends TagRule {
   folder?: string;
   file: string;
 }
+
+/** A message rule; likewise limited to a folder when it has one. */
+export interface DrawMessage extends MessageRule {
+  folder?: string;
+  file: string;
+}
+
+interface CompiledMessage {
+  when: Condition;
+  severity: vscode.DiagnosticSeverity;
+  message: string;
+  folder?: string;
+  source: string;
+}
+
+const SEVERITY = {
+  error: vscode.DiagnosticSeverity.Error,
+  warn: vscode.DiagnosticSeverity.Warning,
+  info: vscode.DiagnosticSeverity.Information,
+  hint: vscode.DiagnosticSeverity.Hint,
+};
 
 interface CompiledTag {
   when: Condition;
@@ -84,6 +106,8 @@ interface Compiled {
 }
 
 const sourceOf = (r: { file: string; line: number }) => `${r.file}, line ${r.line}`;
+
+const messageFor = (m: { message: string }, t: Token) => m.message.replace(/\{text\}/g, t.text);
 
 interface Token {
   range: vscode.Range;
@@ -132,6 +156,9 @@ function compileCondition(c: TokenCondition): Condition {
     case "text":
       // Several texts mean any of them.
       return { kind: "text", text: new RegExp(c.globs.map((g) => globToRegExp(g).source).join("|")) };
+    case "doc":
+      // Documentation spans lines and nobody remembers its capitalization.
+      return { kind: "doc", text: new RegExp(c.globs.map((g) => globToRegExp(g).source).join("|"), "is") };
     case "selector": {
       const { type, modifiers, language } = parseSelector(c.selector);
       return { kind: "selector", matcher: { type, modifiers, language } };
@@ -167,7 +194,7 @@ function specificity(when: TokenCondition): number {
       language ||= !!s.language;
     } else if (c.kind === "language") language = true;
     else if (c.kind === "text") text = Math.max(text, c.globs.some((g) => g.includes("*")) ? 1 : 2);
-    else if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits") symbols++;
+    else if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "doc") symbols++;
     else if (c.kind === "and") {
       walk(c.left);
       walk(c.right);
@@ -192,6 +219,21 @@ const usesContains = (c: Condition): boolean =>
   ((c.kind === "within" || c.kind === "inherits") && usesContains(c.inner)) ||
   (c.kind === "not" && usesContains(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (usesContains(c.left) || usesContains(c.right)));
+
+const usesDoc = (c: Condition): boolean =>
+  c.kind === "doc" ||
+  ((c.kind === "contains" || c.kind === "within" || c.kind === "inherits") && usesDoc(c.inner)) ||
+  (c.kind === "not" && usesDoc(c.operand)) ||
+  ((c.kind === "and" || c.kind === "or") && (usesDoc(c.left) || usesDoc(c.right)));
+
+/** The prose of hovers: Markdown without its code blocks, which hold signatures. */
+const prose = (hovers: vscode.Hover[]) =>
+  hovers
+    .flatMap((h) => h.contents)
+    .map((c) => (typeof c === "string" ? c : "language" in c ? "" : c.value))
+    .join("\n")
+    .replace(/```[\s\S]*?```/g, "")
+    .trim();
 
 type Loader = (uri: vscode.Uri) => Promise<DocData | undefined>;
 type Log = (line: string) => void;
@@ -223,6 +265,10 @@ class DocData {
   private importing?: Promise<void>;
   /** Names used here and defined in another workspace file: their definitions' name tokens. */
   private definitions = new Map<string, { data: DocData; token: Token }[]>();
+  /** Hover prose by token text, for doc(). */
+  private hovers = new Map<string, string>();
+  /** Set in the second pass of a document on screen: from then on doc() asks about every name. */
+  private allDocs = false;
   /** True once definitions in other files are looked up. */
   imported = false;
 
@@ -236,6 +282,8 @@ class DocData {
     private readonly custom: Set<string>,
     /** Some rule uses contains(), so definitions elsewhere are worth looking up even without modifiers. */
     private readonly follow: boolean,
+    /** Some rule uses doc(). */
+    private readonly docs: boolean,
     private readonly log: Log,
   ) {
     for (const s of symbols) this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
@@ -281,7 +329,15 @@ class DocData {
 
   private async importTags() {
     await this.ensureTags();
-    if (!this.custom.size && !this.follow) return;
+    if (this.docs) {
+      // Hovers are slow; the first pass is drawn without them.
+      this.allDocs = true;
+      await this.fetchDocs(this.tokens);
+    }
+    if (!this.custom.size && !this.follow) {
+      if (this.docs) await this.applyTags();
+      return;
+    }
     const start = Date.now();
     const seen = new Set<string>();
     const refs = this.tokens.filter((t) => !t.modifiers.includes("declaration") && !seen.has(t.text) && seen.add(t.text)).slice(0, MAX_REFS);
@@ -321,7 +377,7 @@ class DocData {
       `${fileName(this.doc.uri)}: asked about ${refs.length} names in ${Date.now() - start} ms; ${this.definitions.size} defined in other files; ` +
         `modifiers from there: ${summary.join("; ") || "none"}`,
     );
-    if (!found.size && !this.definitions.size) return;
+    if (!found.size && !this.definitions.size && !this.docs) return;
     for (const t of this.tokens) this.give(t, [...(found.get(t.text) ?? [])], fromFile.get(t.text) ?? "");
     this.owners.clear();
     await this.applyTags();
@@ -346,9 +402,33 @@ class DocData {
     return this.tokens.find((t) => t.range.contains(range.start) && t.range.start.line === range.start.line);
   }
 
-  /** Answers the type hierarchy parts of c ahead of time, so test() can stay synchronous. */
-  async prepare(c: Condition): Promise<void> {
+  /** Hover prose for these tokens' names, asked once per name. */
+  private async fetchDocs(tokens: Token[]) {
+    const seen = new Set<string>();
+    const todo = tokens.filter((t) => !this.hovers.has(t.text) && !seen.has(t.text) && seen.add(t.text)).slice(0, MAX_REFS);
+    if (!todo.length) return;
+    const start = Date.now();
+    await inBatches(todo, async (t) => {
+      const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", this.doc.uri, t.range.start).then(
+        (r) => r ?? [],
+        () => [],
+      );
+      this.hovers.set(t.text, prose(hovers));
+    });
+    if (todo.length > 1) this.log(`${fileName(this.doc.uri)}: ${todo.length} hovers for doc() in ${Date.now() - start} ms`);
+  }
+
+  /**
+   * Answers the type hierarchy and documentation parts of c ahead of time, so test() can stay
+   * synchronous. doc() needs hovers: for scope only (a base type's name), or, once this document is
+   * on screen and past its first pass, for every name.
+   */
+  async prepare(c: Condition, scope?: Token[]): Promise<void> {
     switch (c.kind) {
+      case "doc":
+        if (scope) await this.fetchDocs(scope);
+        else if (this.allDocs) await this.fetchDocs(this.tokens);
+        return;
       case "inherits":
         await this.prepare(c.inner);
         if (!this.inherited.has(c)) this.inherited.set(c, this.computeInherits(c.inner));
@@ -363,11 +443,11 @@ class DocData {
       case "within":
         return this.prepare(c.inner);
       case "not":
-        return this.prepare(c.operand);
+        return this.prepare(c.operand, scope);
       case "and":
       case "or":
-        await this.prepare(c.left);
-        await this.prepare(c.right);
+        await this.prepare(c.left, scope);
+        await this.prepare(c.right, scope);
     }
   }
 
@@ -377,6 +457,8 @@ class DocData {
         return c.ids.includes(this.doc.languageId);
       case "text":
         return c.text.test(t.text);
+      case "doc":
+        return c.text.test(this.hovers.get(t.text) ?? "");
       case "selector":
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":
@@ -454,7 +536,7 @@ class DocData {
           const data = await this.load(base.uri);
           const name = data?.tokenAt(base.selectionRange);
           if (data && name) {
-            await data.prepare(inner);
+            await data.prepare(inner, [name]);
             if (data.test(inner, name)) return true;
           }
           next.push(base);
@@ -469,6 +551,8 @@ class DocData {
 export class TokenDecorator implements vscode.Disposable {
   private rules: Compiled[] = [];
   private tags: CompiledTag[] = [];
+  private messages: CompiledMessage[] = [];
+  private readonly diagnostics = vscode.languages.createDiagnosticCollection("semantic-theme-extender");
   private types: vscode.TextEditorDecorationType[] = [];
   private timers = new Map<string, NodeJS.Timeout>();
   /** Analyzed documents by URI, valid for one document version. */
@@ -490,11 +574,12 @@ export class TokenDecorator implements vscode.Disposable {
         else this.cache.delete(e.document.uri.toString());
         this.schedule(e.document);
       }),
+      vscode.workspace.onDidCloseTextDocument((doc) => this.diagnostics.delete(doc.uri)),
     ];
   }
 
   /** New rules (after a rules or theme change): rebuild decoration types and redraw. */
-  update(rules: DrawRule[], tags: DrawTag[] = []) {
+  update(rules: DrawRule[], tags: DrawTag[] = [], messages: DrawMessage[] = []) {
     this.types.forEach((t) => t.dispose());
     this.types = rules.map((r) => vscode.window.createTextEditorDecorationType(decorationOptions(r.style)));
     this.rules = rules.map((r) => ({
@@ -506,6 +591,8 @@ export class TokenDecorator implements vscode.Disposable {
       source: sourceOf(r),
     }));
     this.tags = tags.map((t) => ({ when: compileCondition(t.when), modifiers: t.modifiers, folder: t.folder, source: sourceOf(t) }));
+    this.messages = messages.map((m) => ({ when: compileCondition(m.when), severity: SEVERITY[m.severity], message: m.message, folder: m.folder, source: sourceOf(m) }));
+    this.diagnostics.clear();
     this.cache.clear();
     vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document, 0, 0));
   }
@@ -538,6 +625,10 @@ export class TokenDecorator implements vscode.Disposable {
     matching.forEach(({ r }, k) => {
       lines.push(`  ${k === 0 ? "drawn:" : "also matches:"} ${r.text} = ${JSON.stringify(r.style)}  (${r.source})`);
     });
+    for (const m of this.messages.filter((m) => inFolder(m.folder, doc.uri))) {
+      await data.prepare(m.when);
+      if (data.test(m.when, token)) lines.push(`  message: ${messageFor(m, token)}  (${m.source})`);
+    }
     return lines;
   }
 
@@ -563,7 +654,9 @@ export class TokenDecorator implements vscode.Disposable {
       .filter((i) => inFolder(this.rules[i].folder, doc.uri))
       .sort((a, b) => this.rules[a].specificity - this.rules[b].specificity || a - b);
     const ranges: vscode.Range[][] = this.rules.map(() => []);
-    if (order.length) {
+    const messages = this.messages.filter((m) => inFolder(m.folder, doc.uri));
+    const diagnostics: vscode.Diagnostic[] = [];
+    if (order.length || messages.length) {
       const version = doc.version;
       const data = await this.load(doc.uri);
       if (!data) {
@@ -572,8 +665,18 @@ export class TokenDecorator implements vscode.Disposable {
         return;
       }
       for (const k of order) await data.prepare(this.rules[k].when);
+      for (const m of messages) await data.prepare(m.when);
       // The document changed while this was computed; a newer refresh is on its way.
       if (doc.version !== version) return;
+      for (const m of messages) {
+        for (const token of data.tokens) {
+          if (!data.test(m.when, token)) continue;
+          const d = new vscode.Diagnostic(token.range, messageFor(m, token), m.severity);
+          d.source = "Semantic Theme Extender";
+          d.code = m.source;
+          diagnostics.push(d);
+        }
+      }
       for (const token of data.tokens) {
         // The most specific matching rule wins; among equals the later one.
         for (let k = order.length - 1; k >= 0; k--) {
@@ -593,10 +696,11 @@ export class TokenDecorator implements vscode.Disposable {
     for (const editor of editors) {
       this.types.forEach((t, i) => editor.setDecorations(t, ranges[i]));
     }
+    this.diagnostics.set(doc.uri, diagnostics);
   }
 
   private needsSymbols() {
-    return this.rules.some((r) => needsSymbols(r.when)) || this.tags.some((t) => needsSymbols(t.when));
+    return [...this.rules, ...this.tags, ...this.messages].some((r) => needsSymbols(r.when));
   }
 
   /** Tokens (with custom modifiers) and symbols of a document, also one that isn't open (a base type's file). */
@@ -624,8 +728,10 @@ export class TokenDecorator implements vscode.Disposable {
     const symbols = this.needsSymbols() ? await this.symbols(doc) : [];
     const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
     const custom = new Set(this.tags.flatMap((t) => t.modifiers));
-    const follow = this.rules.some((r) => usesContains(r.when)) || this.tags.some((t) => usesContains(t.when));
-    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags, custom, follow, this.log);
+    const all = [...this.rules, ...this.tags, ...this.messages];
+    const follow = all.some((r) => usesContains(r.when));
+    const docs = all.some((r) => usesDoc(r.when));
+    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags, custom, follow, docs, this.log);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */
@@ -674,6 +780,7 @@ export class TokenDecorator implements vscode.Disposable {
   }
 
   dispose() {
+    this.diagnostics.dispose();
     this.timers.forEach((t) => clearTimeout(t));
     this.types.forEach((t) => t.dispose());
     this.subscriptions.forEach((s) => s.dispose());

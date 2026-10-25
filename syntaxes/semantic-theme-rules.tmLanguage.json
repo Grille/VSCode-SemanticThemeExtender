@@ -14,7 +14,7 @@
     },
     { "match": "\\boverride(?!\\s*=)(?=\\s*[{A-Za-z_*$])", "name": "keyword.control.override.semantic-theme-rules" },
     { "match": "\\b(?:contains|within|inherits)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
-    { "match": "\\btext(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
+    { "match": "\\b(?:text|doc)(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
     { "match": "@[\\w-]*", "name": "entity.name.function.expression.semantic-theme-rules" },
     { "match": "\\blanguage(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },
     { "match": "\\b(?:ui|semantic|textmate)(?!\\s*=)(?=\\s+[A-Za-z_*]|\\s*\\{)", "name": "keyword.control.kind.semantic-theme-rules" },
@@ -36,6 +36,13 @@
     { "match": "\\$[\\w-]+", "name": "variable.other.semantic-theme-rules" },
     { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.numeric.color.semantic-theme-rules" },
     { "match": "->|=>", "name": "keyword.operator.arrow.semantic-theme-rules" },
+    {
+      "match": "(:=)\\s*(error|warn|info|hint)(?=\\s*\\()",
+      "captures": {
+        "1": { "name": "keyword.operator.assignment.semantic-theme-rules" },
+        "2": { "name": "support.function.semantic-theme-rules" }
+      }
+    },
     {
       "match": "(\\+=)\\s*([A-Za-z_][\\w-]*(?:\\s*,\\s*[A-Za-z_][\\w-]*)*)",
       "captures": {
