@@ -5,6 +5,7 @@
   "patterns": [
     { "match": ";.*$", "name": "comment.line.semicolon.semantic-theme-rules" },
     { "match": "\"[^\"]*\"?", "name": "string.quoted.double.semantic-theme-rules" },
+    { "match": "/(?:\\\\.|\\[(?:\\\\.|[^\\]\\\\])*\\]|[^/\\\\\\[])+/[A-Za-z]*", "name": "string.regexp.semantic-theme-rules" },
     {
       "match": "\\b(match)\\s*\\(\\s*(\\$[\\w-]+)\\s*\\)",
       "captures": {
@@ -14,7 +15,7 @@
     },
     { "match": "\\boverride(?!\\s*=)(?=\\s*[{A-Za-z_*$])", "name": "keyword.control.override.semantic-theme-rules" },
     { "match": "\\b(?:contains|within|inherits)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
-    { "match": "\\b(?:text|doc)(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
+    { "match": "\\b(?:text|doc|signature)(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
     { "match": "@[\\w-]*", "name": "entity.name.function.expression.semantic-theme-rules" },
     { "match": "\\blanguage(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },
     { "match": "\\b(?:ui|semantic|textmate)(?!\\s*=)(?=\\s+[A-Za-z_*]|\\s*\\{)", "name": "keyword.control.kind.semantic-theme-rules" },

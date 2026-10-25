@@ -53,6 +53,7 @@ export interface MessageRule {
   when: TokenCondition;
   severity: Severity;
   message: string;
+  code?: string;
   line: number;
 }
 
@@ -324,7 +325,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
       if (st.kind === "message") {
         if (st.target && st.target !== "semantic") continue;
         const when = stripCondition(headOf(st));
-        result.messageRules.push({ when, severity: st.severity, message: st.message, line: st.selectorRange.start.line + 1 });
+        result.messageRules.push({ when, severity: st.severity, message: st.message, code: st.code, line: st.selectorRange.start.line + 1 });
         result.log.push(`msg   ${conditionText(when)} := ${st.severity}("${st.message}")  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }

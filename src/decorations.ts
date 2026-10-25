@@ -9,10 +9,11 @@
 // order (global rules, then the project's), so later heads and every drawn rule can select them.
 // In a document on screen, a token whose definition is in another workspace file also takes over
 // the custom modifiers that definition got there, and contains() is answered for it there.
-// doc() matches the prose of a token's hover; hovers are asked for in that same second pass.
+// doc() matches the prose of a token's hover, signature() its code blocks; hovers are asked for in
+// that same second pass.
 
 import * as vscode from "vscode";
-import { conditionText, globToRegExp, TokenCondition } from "./cfg";
+import { conditionText, patternToRegExp, TokenCondition } from "./cfg";
 import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
 import { parseSelector, TokenRegistry } from "./theme";
 
@@ -40,7 +41,8 @@ interface Matcher {
 /** A condition ready to evaluate: texts as regular expressions, selectors parsed. */
 type Condition =
   | { kind: "language"; ids: string[] }
-  | { kind: "text" | "doc"; text: RegExp }
+  /** Several patterns mean any of them. */
+  | { kind: "text" | "doc" | "signature"; tests: RegExp[] }
   | { kind: "selector"; matcher: Matcher }
   | { kind: "contains" | "within" | "inherits"; inner: Condition }
   | { kind: "not"; operand: Condition }
@@ -71,8 +73,61 @@ interface CompiledMessage {
   when: Condition;
   severity: vscode.DiagnosticSeverity;
   message: string;
+  code?: string;
   folder?: string;
   source: string;
+}
+
+const DIAGNOSTIC_SOURCE = "Semantic Theme Extender";
+const IGNORE = /semantic-theme:\s*ignore\b(.*)/;
+
+/**
+ * Whether a marker silences the message for a token on this line: "semantic-theme: ignore" in a
+ * comment on the same line, or on the line above when that line holds nothing but the comment.
+ * Any comment syntax works, it's only text. Names after it limit it to those messages.
+ */
+function ignored(doc: vscode.TextDocument, line: number, code: string | undefined): boolean {
+  const silences = (text: string, alone: boolean) => {
+    const m = IGNORE.exec(text);
+    if (!m || (alone && !/^\s*\S{0,3}\s*semantic-theme:/.test(text))) return false;
+    const names = m[1].replace(/\*\/|-->/g, "").split(/[\s,]+/).filter(Boolean);
+    return !names.length || (!!code && names.includes(code));
+  };
+  return silences(doc.lineAt(line).text, false) || (line > 0 && silences(doc.lineAt(line - 1).text, true));
+}
+
+// Line comments by language, for the quick fix that inserts a marker.
+const LINE_COMMENTS: Record<string, string> = {};
+for (const ids of [
+  ["//", "c cpp csharp java javascript javascriptreact typescript typescriptreact go rust swift kotlin scala dart php fsharp jsonc groovy objective-c objective-cpp"],
+  ["#", "python shellscript ruby perl r yaml toml coffeescript powershell makefile dockerfile julia elixir nim"],
+  ["--", "lua sql haskell elm"],
+  ["'", "vb"],
+  [";", "clojure lisp scheme"],
+]) {
+  for (const id of ids[1].split(" ")) LINE_COMMENTS[id] = ids[0];
+}
+
+/** Offers "ignore here" on this extension's messages, as a comment line above the token. */
+class IgnoreFix implements vscode.CodeActionProvider {
+  provideCodeActions(doc: vscode.TextDocument, _range: vscode.Range, context: vscode.CodeActionContext): vscode.CodeAction[] {
+    const comment = LINE_COMMENTS[doc.languageId];
+    if (!comment) return [];
+    return context.diagnostics
+      .filter((d) => d.source === DIAGNOSTIC_SOURCE)
+      .map((d) => {
+        // Named messages have their name as code; others the rules file and line.
+        const code = typeof d.code === "string" && /^[A-Za-z_][\w-]*$/.test(d.code) ? d.code : undefined;
+        const line = doc.lineAt(d.range.start.line);
+        const indent = line.text.slice(0, line.firstNonWhitespaceCharacterIndex);
+        const marker = `${comment} semantic-theme: ignore${code ? ` ${code}` : ""}`;
+        const action = new vscode.CodeAction(`Ignore ${code ?? "this message"} here`, vscode.CodeActionKind.QuickFix);
+        action.diagnostics = [d];
+        action.edit = new vscode.WorkspaceEdit();
+        action.edit.insert(doc.uri, new vscode.Position(line.lineNumber, 0), `${indent}${marker}\n`);
+        return action;
+      });
+  }
 }
 
 const SEVERITY = {
@@ -154,11 +209,11 @@ function compileCondition(c: TokenCondition): Condition {
     case "language":
       return { kind: "language", ids: c.ids };
     case "text":
-      // Several texts mean any of them.
-      return { kind: "text", text: new RegExp(c.globs.map((g) => globToRegExp(g).source).join("|")) };
+      return { kind: "text", tests: c.patterns.map((p) => patternToRegExp(p)) };
     case "doc":
-      // Documentation spans lines and nobody remembers its capitalization.
-      return { kind: "doc", text: new RegExp(c.globs.map((g) => globToRegExp(g).source).join("|"), "is") };
+    case "signature":
+      // Hovers span lines and nobody remembers their capitalization; regular expressions say for themselves.
+      return { kind: c.kind, tests: c.patterns.map((p) => patternToRegExp(p, "is")) };
     case "selector": {
       const { type, modifiers, language } = parseSelector(c.selector);
       return { kind: "selector", matcher: { type, modifiers, language } };
@@ -193,8 +248,8 @@ function specificity(when: TokenCondition): number {
       modifiers = Math.max(modifiers, s.modifiers.length);
       language ||= !!s.language;
     } else if (c.kind === "language") language = true;
-    else if (c.kind === "text") text = Math.max(text, c.globs.some((g) => g.includes("*")) ? 1 : 2);
-    else if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "doc") symbols++;
+    else if (c.kind === "text") text = Math.max(text, c.patterns.some((p) => typeof p !== "string" || p.includes("*")) ? 1 : 2);
+    else if (c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "doc" || c.kind === "signature") symbols++;
     else if (c.kind === "and") {
       walk(c.left);
       walk(c.right);
@@ -222,18 +277,34 @@ const usesContains = (c: Condition): boolean =>
 
 const usesDoc = (c: Condition): boolean =>
   c.kind === "doc" ||
+  c.kind === "signature" ||
   ((c.kind === "contains" || c.kind === "within" || c.kind === "inherits") && usesDoc(c.inner)) ||
   (c.kind === "not" && usesDoc(c.operand)) ||
   ((c.kind === "and" || c.kind === "or") && (usesDoc(c.left) || usesDoc(c.right)));
 
-/** The prose of hovers: Markdown without its code blocks, which hold signatures. */
-const prose = (hovers: vscode.Hover[]) =>
-  hovers
-    .flatMap((h) => h.contents)
-    .map((c) => (typeof c === "string" ? c : "language" in c ? "" : c.value))
-    .join("\n")
-    .replace(/```[\s\S]*?```/g, "")
-    .trim();
+interface HoverText {
+  /** The documentation: Markdown outside code blocks. */
+  prose: string;
+  /** Signatures and types: the code blocks, without their fences. */
+  code: string;
+}
+
+function hoverText(hovers: vscode.Hover[]): HoverText {
+  const prose: string[] = [];
+  const code: string[] = [];
+  for (const c of hovers.flatMap((h) => h.contents)) {
+    if (typeof c !== "string" && "language" in c) {
+      code.push(c.value);
+      continue;
+    }
+    const md = typeof c === "string" ? c : c.value;
+    prose.push(md.replace(/```[^\n]*\n?([\s\S]*?)```/g, (_, block: string) => (code.push(block.trim()), "")));
+  }
+  // Markdown separators (Pylance puts --- between signature and docs) aren't documentation, and
+  // would keep doc(/^.../) from ever matching the first words.
+  const text = prose.join("\n").replace(/^\s*([-*_])(\s*\1){2,}\s*$/gm, "");
+  return { prose: text.trim(), code: code.join("\n") };
+}
 
 type Loader = (uri: vscode.Uri) => Promise<DocData | undefined>;
 type Log = (line: string) => void;
@@ -265,8 +336,8 @@ class DocData {
   private importing?: Promise<void>;
   /** Names used here and defined in another workspace file: their definitions' name tokens. */
   private definitions = new Map<string, { data: DocData; token: Token }[]>();
-  /** Hover prose by token text, for doc(). */
-  private hovers = new Map<string, string>();
+  /** Hover text by token text, for doc() and signature(). */
+  private hovers = new Map<string, HoverText>();
   /** Set in the second pass of a document on screen: from then on doc() asks about every name. */
   private allDocs = false;
   /** True once definitions in other files are looked up. */
@@ -413,9 +484,9 @@ class DocData {
         (r) => r ?? [],
         () => [],
       );
-      this.hovers.set(t.text, prose(hovers));
+      this.hovers.set(t.text, hoverText(hovers));
     });
-    if (todo.length > 1) this.log(`${fileName(this.doc.uri)}: ${todo.length} hovers for doc() in ${Date.now() - start} ms`);
+    if (todo.length > 1) this.log(`${fileName(this.doc.uri)}: ${todo.length} hovers for doc() / signature() in ${Date.now() - start} ms`);
   }
 
   /**
@@ -426,6 +497,7 @@ class DocData {
   async prepare(c: Condition, scope?: Token[]): Promise<void> {
     switch (c.kind) {
       case "doc":
+      case "signature":
         if (scope) await this.fetchDocs(scope);
         else if (this.allDocs) await this.fetchDocs(this.tokens);
         return;
@@ -456,9 +528,11 @@ class DocData {
       case "language":
         return c.ids.includes(this.doc.languageId);
       case "text":
-        return c.text.test(t.text);
+        return c.tests.some((r) => r.test(t.text));
       case "doc":
-        return c.text.test(this.hovers.get(t.text) ?? "");
+        return c.tests.some((r) => r.test(this.hovers.get(t.text)?.prose ?? ""));
+      case "signature":
+        return c.tests.some((r) => r.test(this.hovers.get(t.text)?.code ?? ""));
       case "selector":
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":
@@ -575,6 +649,9 @@ export class TokenDecorator implements vscode.Disposable {
         this.schedule(e.document);
       }),
       vscode.workspace.onDidCloseTextDocument((doc) => this.diagnostics.delete(doc.uri)),
+      vscode.languages.registerCodeActionsProvider([{ scheme: "file" }, { scheme: "untitled" }], new IgnoreFix(), {
+        providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
+      }),
     ];
   }
 
@@ -591,7 +668,14 @@ export class TokenDecorator implements vscode.Disposable {
       source: sourceOf(r),
     }));
     this.tags = tags.map((t) => ({ when: compileCondition(t.when), modifiers: t.modifiers, folder: t.folder, source: sourceOf(t) }));
-    this.messages = messages.map((m) => ({ when: compileCondition(m.when), severity: SEVERITY[m.severity], message: m.message, folder: m.folder, source: sourceOf(m) }));
+    this.messages = messages.map((m) => ({
+      when: compileCondition(m.when),
+      severity: SEVERITY[m.severity],
+      message: m.message,
+      code: m.code,
+      folder: m.folder,
+      source: sourceOf(m),
+    }));
     this.diagnostics.clear();
     this.cache.clear();
     vscode.window.visibleTextEditors.forEach((e) => this.schedule(e.document, 0, 0));
@@ -627,7 +711,9 @@ export class TokenDecorator implements vscode.Disposable {
     });
     for (const m of this.messages.filter((m) => inFolder(m.folder, doc.uri))) {
       await data.prepare(m.when);
-      if (data.test(m.when, token)) lines.push(`  message: ${messageFor(m, token)}  (${m.source})`);
+      if (!data.test(m.when, token)) continue;
+      const silenced = ignored(doc, token.range.start.line, m.code) ? " [ignored here]" : "";
+      lines.push(`  message${m.code ? ` ${m.code}` : ""}: ${messageFor(m, token)}  (${m.source})${silenced}`);
     }
     return lines;
   }
@@ -670,10 +756,10 @@ export class TokenDecorator implements vscode.Disposable {
       if (doc.version !== version) return;
       for (const m of messages) {
         for (const token of data.tokens) {
-          if (!data.test(m.when, token)) continue;
+          if (!data.test(m.when, token) || ignored(doc, token.range.start.line, m.code)) continue;
           const d = new vscode.Diagnostic(token.range, messageFor(m, token), m.severity);
-          d.source = "Semantic Theme Extender";
-          d.code = m.source;
+          d.source = DIAGNOSTIC_SOURCE;
+          d.code = m.code ?? m.source;
           diagnostics.push(d);
         }
       }

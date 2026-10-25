@@ -14,8 +14,9 @@
 - `contains(...)`: color classes (or other symbols) by what they contain, e.g. classes defining `__slots__`, also where they're used in other files.
 - `within(...)`: tokens inside a matching symbol; `inherits(...)`: types with a matching base type, across files, via the type hierarchy.
 - Custom modifiers: `head += slotted` gives matching tokens a modifier any rule can select (`class.slotted`), across rules files; names used in another file take over their definition's custom modifiers.
-- `doc("*deprecated*")`: tokens whose documentation (hover prose) matches.
-- Messages: `head := warn("{text} ...")` (or `error`, `info`, `hint`) puts a diagnostic on every matching token in open files.
+- Regular expression literals (`/^Dark/i`) wherever a pattern is taken, next to quoted globs.
+- `doc("*deprecated*")`: tokens whose documentation (hover prose) matches; `signature("*: Callable*")`: tokens whose signature or type (hover code) matches.
+- Messages: `head := warn("{text} ...")` (or `error`, `info`, `hint`) puts a diagnostic on every matching token in open files; `warn(name, "...")` names one, and `semantic-theme: ignore [name]` in a comment silences it, with a quick fix to add that comment.
 - **Inspect Token** command: type, modifiers (custom ones with their origin) and matching drawn rules for the token at the cursor.
 - Project rules in `.vscode/semantic-theme.str`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
 - `@name => head` names a selector expression for reuse in heads as `@name`.

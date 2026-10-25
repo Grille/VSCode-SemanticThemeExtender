@@ -4,8 +4,14 @@
 //   $name = color                      variable: top level only, assigned once, usable anywhere
 //   head += slotted, other             custom modifiers: matching tokens get them, as if the language
 //                                      server had reported them; class.slotted selects them anywhere
-//   head := warn("{text} ...")         a message on every matching token: error, warn, info or hint
+//   head := warn("{text} ...")         a message on every matching token: error, warn, info or hint;
+//                                      warn(name, "...") names it, so "semantic-theme: ignore name"
+//                                      in a comment on the token's line or above silences only it
+//   patterns: "*Light*" is a glob (* matches anything, the whole text must match); /^Dark/i is a
+//                                      regular expression (found anywhere unless anchored), for text,
+//                                      doc, signature and $theme
 //   doc("*deprecated*")                in a head: tokens whose hover documentation matches
+//   signature("*: Callable*")          in a head: tokens whose hover code (signature, type) matches
 //   @name => head                      a named selector expression, used as @name in heads:
 //                                      @slots => contains(text("__slots__") variable.classMember)
 //                                      @slots class = ...; top level only, assigned once, usable anywhere
@@ -56,7 +62,7 @@ export type Subject = "type" | "theme";
 export type Pattern =
   | { kind: "any"; range: Range }
   | { kind: "flag"; flag: Flag; range: Range }
-  | { kind: "name"; glob: string; range: Range }
+  | { kind: "name"; pattern: TextPattern; range: Range }
   | { kind: "not"; operand: Pattern; range: Range }
   | { kind: "and" | "or"; left: Pattern; right: Pattern; range: Range };
 
@@ -145,6 +151,8 @@ export interface MessageRule {
   severity: Severity;
   /** {text} stands for the token's text. */
   message: string;
+  /** warn(leaky-slots, "..."): for ignore markers and the Problems panel. */
+  code?: string;
 }
 
 export interface Override {
@@ -172,8 +180,8 @@ export interface Target {
 export type Cond =
   | { kind: "selector"; selector: string; range: Range }
   | { kind: "language"; ids: string[]; range: Range }
-  /** text: the token's own text; doc: the prose of its hover (its documentation). */
-  | { kind: "text" | "doc"; globs: string[]; range: Range }
+  /** text: the token's own text; doc / signature: the prose / the code of its hover. */
+  | { kind: "text" | "doc" | "signature"; patterns: TextPattern[]; range: Range }
   | { kind: "contains" | "within" | "inherits"; inner: Cond; range: Range }
   | { kind: "not"; operand: Cond; range: Range }
   | { kind: "and" | "or"; left: Cond; right: Cond; range: Range }
@@ -183,7 +191,7 @@ export type Cond =
 export type TokenCondition =
   | { kind: "selector"; selector: string }
   | { kind: "language"; ids: string[] }
-  | { kind: "text" | "doc"; globs: string[] }
+  | { kind: "text" | "doc" | "signature"; patterns: TextPattern[] }
   | { kind: "contains" | "within" | "inherits"; inner: TokenCondition }
   | { kind: "not"; operand: TokenCondition }
   | { kind: "and" | "or"; left: TokenCondition; right: TokenCondition };
@@ -197,7 +205,8 @@ export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]
       return `language(${c.ids.join(", ")})`;
     case "text":
     case "doc":
-      return `${c.kind}(${c.globs.map((g) => `"${g}"`).join(", ")})`;
+    case "signature":
+      return `${c.kind}(${c.patterns.map(patternText).join(", ")})`;
     case "contains":
     case "within":
     case "inherits":
@@ -224,7 +233,8 @@ export function stripCondition(c: Cond): TokenCondition {
       return { kind: "language", ids: c.ids };
     case "text":
     case "doc":
-      return { kind: c.kind, globs: c.globs };
+    case "signature":
+      return { kind: c.kind, patterns: c.patterns };
     case "contains":
     case "within":
     case "inherits":
@@ -272,6 +282,14 @@ const isNameKind = (text: string): text is NameKind => (NAME_KINDS as string[]).
 export const globToRegExp = (glob: string, flags = "") =>
   new RegExp(`^${glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`, flags);
 
+/** A quoted glob ("*Light*") or a regular expression literal (/^Dark/i). */
+export type TextPattern = string | { regex: string; flags: string };
+
+export const patternText = (p: TextPattern) => (typeof p === "string" ? `"${p}"` : `/${p.regex}/${p.flags}`);
+
+/** globFlags apply to globs only; a regular expression has the flags it was written with. */
+export const patternToRegExp = (p: TextPattern, globFlags = "") => (typeof p === "string" ? globToRegExp(p, globFlags) : new RegExp(p.regex, p.flags));
+
 export type Flag = "dark" | "light" | "contrast";
 export const FLAGS: Flag[] = ["dark", "light", "contrast"];
 export const BUILTINS = new Set(["theme", "type", "none"]);
@@ -308,7 +326,7 @@ export function matchesPattern(p: Pattern, flags: Set<Flag>, themeId: string): b
     case "flag":
       return flags.has(p.flag);
     case "name":
-      return globToRegExp(p.glob, "i").test(themeId);
+      return patternToRegExp(p.pattern, "i").test(themeId);
     case "not":
       return !matchesPattern(p.operand, flags, themeId);
     case "and":
@@ -320,7 +338,7 @@ export function matchesPattern(p: Pattern, flags: Set<Flag>, themeId: string): b
 
 // ---------------------------------------------------------------------------------------------
 
-type TokenType = "hex" | "var" | "at" | "ident" | "num" | "string" | "punct";
+type TokenType = "hex" | "var" | "at" | "ident" | "num" | "string" | "regex" | "punct";
 
 interface Token {
   type: TokenType;
@@ -335,7 +353,7 @@ class ParseError extends Error {
 }
 
 const TOKEN_RE =
-  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.]|[:-](?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(->|=>|\+=|:=|[=(),!|&{}*])/y;
+  /(#[0-9a-fA-F]+)|\$([\w-]*)|@([\w-]*)|((?:\*(?=[.:])|[A-Za-z_])(?:[\w.]|[:-](?=\w))*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:%|deg\b|°)?)|("[^"\n]*"?)|(\/(?:\\.|\[(?:\\.|[^\]\\])*\]|[^\/\\[])+\/[A-Za-z]*)|(->|=>|\+=|:=|[=(),!|&{}*])/y;
 
 function tokenize(text: string, problems: Problem[]): Token[] {
   const tokens: Token[] = [];
@@ -352,13 +370,13 @@ function tokenize(text: string, problems: Problem[]): Token[] {
       const m = TOKEN_RE.exec(lineText);
       const range = (len: number): Range => ({ start: { line, col }, end: { line, col: col + len } });
       if (!m) {
-        problems.push({ range: range(1), message: `Unexpected character '${c}'` });
+        problems.push({ range: range(1), message: c === "/" ? "Unclosed regular expression: it ends with / on the same line, e.g. /^Dark/i" : `Unexpected character '${c}'` });
         col++;
         continue;
       }
-      const [all, hex, v, at, ident, num, str] = m;
+      const [all, hex, v, at, ident, num, str, regex] = m;
       const type: TokenType =
-        hex !== undefined ? "hex" : v !== undefined ? "var" : at !== undefined ? "at" : ident !== undefined ? "ident" : num !== undefined ? "num" : str !== undefined ? "string" : "punct";
+        hex !== undefined ? "hex" : v !== undefined ? "var" : at !== undefined ? "at" : ident !== undefined ? "ident" : num !== undefined ? "num" : str !== undefined ? "string" : regex !== undefined ? "regex" : "punct";
       if (type === "string" && !all.endsWith('"') || all === '"') {
         problems.push({ range: range(all.length), message: "Unclosed string" });
       }
@@ -476,11 +494,42 @@ export function parseRulesFile(text: string): RulesFile {
       }
       fail(t?.type === "string" ? "$type is matched with flags: dark, light, contrast" : "Expected dark, light, contrast or _");
     }
-    if (t?.type === "string") {
+    if (t?.type === "string" || t?.type === "regex") {
       next();
-      return { kind: "name", glob: t.text, range: t.range };
+      return { kind: "name", pattern: t.type === "regex" ? regexPattern(t) : t.text, range: t.range };
     }
     return fail(t?.type === "ident" ? `Theme names are quoted: "${t.text}"` : 'Expected a theme name like "Dark Modern", or _');
+  }
+
+  // A /source/flags token as a pattern; an invalid one fails its statement.
+  function regexPattern(t: Token): TextPattern {
+    const end = t.text.lastIndexOf("/");
+    const p = { regex: t.text.slice(1, end), flags: t.text.slice(end + 1) };
+    try {
+      if (/[gy]/.test(p.flags)) throw new Error("Invalid regular expression: the g and y flags have no meaning here");
+      new RegExp(p.regex, p.flags);
+    } catch (e) {
+      fail((e as Error).message, t);
+    }
+    return p;
+  }
+
+  // Quoted globs and /regex/ literals, comma-separated, after the "(" of text(...) and the like.
+  function parsePatterns(what: string): TextPattern[] {
+    const items: TextPattern[] = [];
+    do {
+      const x = peek();
+      if (x?.type === "regex") {
+        next();
+        items.push(regexPattern(x));
+        continue;
+      }
+      if (x?.type !== "string") fail(`Expected ${what}`);
+      next();
+      if (!x.text) problems.push({ range: x.range, message: `Expected ${what}` });
+      else items.push(x.text);
+    } while (isPunct(peek(), ",") && next());
+    return items;
   }
 
   // ---- selector expressions: struct, language(python), text(...), contains(...), @name, side by side, ! | ( )
@@ -542,13 +591,18 @@ export function parseRulesFile(text: string): RulesFile {
     }
     if (t?.type === "var") fail(`$${t.text} is a color; named selector expressions start with @: @${t.text || "name"} => ...`, t);
     const call = (name: string) => t?.type === "ident" && t.text === name && isPunct(peek(1), "(");
-    for (const kind of ["text", "doc"] as const) {
+    const examples = {
+      text: 'the token text in quotes or a /regex/, e.g. text("__slots__")',
+      doc: 'a pattern for the documentation in quotes or a /regex/, e.g. doc("*deprecated*")',
+      signature: 'a pattern for the signature in quotes or a /regex/, e.g. signature(/: int\\b/)',
+    };
+    for (const kind of ["text", "doc", "signature"] as const) {
       if (!call(kind)) continue;
       next();
       next();
-      const globs = parseList("string", kind === "text" ? 'the token text in quotes, e.g. text("__slots__")' : 'a pattern for the documentation in quotes, e.g. doc("*deprecated*")');
+      const patterns = parsePatterns(examples[kind]);
       const close = expect(")", `')' to close ${kind}(...)`);
-      return { kind, globs, range: span(t.range, close.range) };
+      return { kind, patterns, range: span(t.range, close.range) };
     }
     if (call("language")) {
       next();
@@ -572,7 +626,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return { kind: "selector", selector: t.text, range: t.range };
     }
-    return fail("Expected a selector, text(...), doc(...), language(...), contains(...), within(...), inherits(...), @expression, '!' or '('");
+    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), contains(...), within(...), inherits(...), @expression, '!' or '('");
   }
 
   // ---- color expressions
@@ -620,7 +674,7 @@ export function parseRulesFile(text: string): RulesFile {
         if (t.text === "style") fail("style() must wrap the whole value, e.g. style(mix(class, function), bold)", t);
         if (!FUNCTION_NAMES.has(t.text)) {
           const flagNext = peek(1) && (isPunct(peek(1), "!") || (peek(1).type === "ident" && STYLE_NAMES.has(peek(1).text)));
-          if (["text", "doc", "language", "contains", "within", "inherits"].includes(t.text)) {
+          if (["text", "doc", "signature", "language", "contains", "within", "inherits"].includes(t.text)) {
             fail(`${t.text}(...) is part of a selector expression, not a color; name one with @name => ${t.text}(...)`, t);
           }
           fail(`Unknown function '${t.text}'${flagNext ? `. For font styles write style(${t.text}, ...)` : ""}`, t);
@@ -874,10 +928,17 @@ export function parseRulesFile(text: string): RulesFile {
       if (isPunct(n, ":=")) {
         next();
         const fn = peek();
-        const usage = 'Expected warn("message"), or error, info or hint; {text} in the message is the token';
+        const usage = 'Expected warn("message") or warn(name, "message"), or error, info or hint; {text} in the message is the token';
         if (fn?.type !== "ident" || !(SEVERITIES as string[]).includes(fn.text) || !isPunct(peek(1), "(") || !sameLine(n, fn)) fail(usage, fn && sameLine(n, fn) ? fn : n);
         next();
         next();
+        let code: string | undefined;
+        if (peek()?.type === "ident") {
+          const name = next();
+          if (!/^[A-Za-z_][\w-]*$/.test(name.text)) fail("A message name looks like leaky-slots: letters, digits, - and _", name);
+          code = name.text;
+          expect(",", "',' and the message after the name");
+        }
         const text = peek();
         if (text?.type !== "string") fail(usage, text);
         next();
@@ -892,6 +953,7 @@ export function parseRulesFile(text: string): RulesFile {
           when,
           severity: fn.text as Severity,
           message: text.text,
+          code,
         };
       }
       return fail(`Expected '=', '+=' or ':=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
@@ -1066,8 +1128,11 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   $name = color            variable: top level, assigned once, use as $name
 ;   head += slotted          custom modifiers for matching tokens; class.slotted = ... colors them,
 ;                            in any rules file (variable, string, comment, keyword: *.slotted)
-;   head := warn("{text} ...")  a message on matching tokens in open files: error warn info hint
+;   head := warn("{text} ...")  a message on matching tokens in open files: error warn info hint;
+;                            warn(name, "...") can be silenced by name: # semantic-theme: ignore name
 ;   doc("*deprecated*") x    only tokens whose documentation (hover, without code) matches
+;   signature("*: int") x    only tokens whose signature or type (the hover's code) matches
+;   "*Light*" is a glob, /^Dark/i a regular expression; both work in text, doc, signature, $theme
 ;   @name => head            a named selector expression, used in heads: @name class = ...
 ;
 ;   class, function, ...     the active theme's color for a semantic token type
