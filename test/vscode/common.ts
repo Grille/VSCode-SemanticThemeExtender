@@ -4,7 +4,7 @@ import type { api as Api } from "../../src/extension";
 
 export const projects = path.resolve(__dirname, "..", "..", "..", "test", "fixtures", "projects");
 
-const RULES = vscode.Uri.parse("semantic-theme-rules:/rules.str");
+export const RULES = vscode.Uri.parse("semantic-theme-rules:/rules.str");
 
 let ext: typeof Api | undefined;
 async function extension(): Promise<typeof Api> {
@@ -84,3 +84,6 @@ export async function eventually<T>(check: () => Promise<T> | T, timeoutMs = 90_
     }
   }
 }
+
+/** The global rules' warnings about conditions a language can't support. */
+export const unsupportedWarnings = () => vscode.languages.getDiagnostics(RULES).map((d) => d.message).filter((m) => m.includes("can't match"));

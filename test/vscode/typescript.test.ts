@@ -1,6 +1,6 @@
 import { strict as assert } from "assert";
 import * as vscode from "vscode";
-import { drawnColor, eventually, open, setRules, tokens } from "./common";
+import { drawnColor, eventually, open, setRules, tokens, unsupportedWarnings } from "./common";
 
 describe("TypeScript, built in", () => {
   let main: vscode.TextDocument;
@@ -26,6 +26,13 @@ describe("TypeScript, built in", () => {
       await setRules('decorated(text("sealed")) class = #AA0000');
       await eventually(async () => assert.equal(await drawnColor(main, 9, "Point"), "#AA0000"));
       assert.equal(await drawnColor(main, 4, "Child"), undefined);
+    });
+
+    it("inherits(): a warning on the rule, since there's no type hierarchy", async () => {
+      await setRules('inherits(text("Slotted")) class = #AA0000');
+      await eventually(() =>
+        assert.deepEqual(unsupportedWarnings(), ["inherits() can't match in typescript: its language server provides no type hierarchy (seen in main.ts)"]),
+      );
     });
 
     it("contains(): members", async () => {

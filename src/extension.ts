@@ -17,6 +17,9 @@ let store: RulesStore;
 let cachedResolver: ThemeResolver | undefined;
 let decorator: TokenDecorator;
 let lastTextRules = "";
+let language: ReturnType<typeof registerLanguage>;
+/** The rules files in use and their saved text, as of the last apply. */
+let sources: { uri: vscode.Uri; text: string }[] = [];
 
 export function activate(context: vscode.ExtensionContext) {
   output = vscode.window.createOutputChannel("Semantic Theme Extender");
@@ -29,9 +32,12 @@ export function activate(context: vscode.ExtensionContext) {
   decorator = new TokenDecorator(() => resolver()?.registry, LANGUAGE_ID, (line) => output.appendLine(`[decorations] ${line}`));
   context.subscriptions.push(decorator);
 
-  const language = registerLanguage(context, {
+  language = registerLanguage(context, {
     resolver: () => resolver(),
+    missing: () => decorator.support.missing(),
+    sources: () => sources,
   });
+  context.subscriptions.push(decorator.support.onDidChange(() => language.refreshSupport()));
 
   let timer: NodeJS.Timeout | undefined;
   const schedule = (themeChanged: boolean) => {
@@ -162,8 +168,8 @@ async function openProjectRules() {
 }
 
 /** Each trusted workspace folder's project rules, as saved on disk. */
-async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags: DrawTag[]; messages: DrawMessage[] }> {
-  const out = { rules: [] as DrawRule[], tags: [] as DrawTag[], messages: [] as DrawMessage[] };
+async function projectRules(r: ThemeResolver) {
+  const out = { rules: [] as DrawRule[], tags: [] as DrawTag[], messages: [] as DrawMessage[], sources: [] as { uri: vscode.Uri; text: string }[] };
   if (!vscode.workspace.isTrusted) return out;
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     const uri = vscode.Uri.joinPath(folder.uri, PROJECT_FILE);
@@ -172,7 +178,9 @@ async function projectRules(r: ThemeResolver): Promise<{ rules: DrawRule[]; tags
       () => undefined,
     );
     if (!bytes) continue;
-    const result = compile(parseRulesFile(Buffer.from(bytes).toString("utf8")), r, { project: true });
+    const text = Buffer.from(bytes).toString("utf8");
+    out.sources.push({ uri, text });
+    const result = compile(parseRulesFile(text), r, { project: true });
     output.appendLine(`\n== project rules ${uri.fsPath}`);
     result.log.forEach((l) => output.appendLine(l));
     const file = vscode.workspace.asRelativePath(uri);
@@ -249,6 +257,8 @@ async function apply(verbose = false) {
     lastTextRules = textRules;
     decorator.update(drawn, tags, messages);
   }
+  sources = [{ uri: RULES_URI, text: store.text }, ...project.sources];
+  language.refreshSupport();
 
   // Store ownership first: if a write fails half way, the next apply can still clean up.
   if (JSON.stringify(state.get(OWNED_KEY)) !== JSON.stringify(next.owned)) {

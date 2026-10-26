@@ -1,6 +1,6 @@
 import { strict as assert } from "assert";
 import * as vscode from "vscode";
-import { drawnColor, eventually, inspect, open, setProjectRules, setRules, tokens } from "./common";
+import { drawnColor, eventually, inspect, open, setProjectRules, setRules, tokens, unsupportedWarnings } from "./common";
 
 describe("Python, with Pylance", () => {
   let main: vscode.TextDocument;
@@ -45,6 +45,8 @@ describe("Python, with Pylance", () => {
       await eventually(async () => assert.equal(await drawnColor(main, 32, "GrandChild"), "#AA0000"));
       assert.equal(await drawnColor(main, 14, "Keep"), "#AA0000");
       assert.equal(await drawnColor(main, 19, "Point"), undefined);
+      // Pylance has a type hierarchy: no warning on the rule.
+      assert.deepEqual(unsupportedWarnings(), []);
     });
 
     it("custom modifiers from project rules reach other files", async () => {

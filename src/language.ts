@@ -1,16 +1,21 @@
 // Editor support for .str rules files: diagnostics, color swatches, hover and completion.
 
 import * as vscode from "vscode";
-import { CONDITION_ARGS, conditionText, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Range, Rule, Stmt, stripCondition, STYLE_NAMES } from "./cfg";
+import { CONDITION_ARGS, conditionText, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Problem, Range, Rule, Stmt, stripCondition, STYLE_NAMES } from "./cfg";
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
+import { Missing, unsupported } from "./support";
 import { ThemeResolver } from "./theme";
 
 export const LANGUAGE_ID = "semantic-theme-rules";
 
 export interface LanguageHost {
   resolver(): ThemeResolver | undefined;
+  /** Features language servers turned out to lack. */
+  missing?(): Missing[];
+  /** The rules files in use (global and project), with their saved text. */
+  sources?(): { uri: vscode.Uri; text: string }[];
 }
 
 const STYLES = [...STYLE_NAMES];
@@ -50,7 +55,7 @@ const BUILTIN_DOCS: Record<string, string> = {
 const toVsColor = (c: Color) => new vscode.Color(c.r, c.g, c.b, c.a);
 const toVsRange = (r: Range) => new vscode.Range(r.start.line, r.start.col, r.end.line, r.end.col);
 
-export function registerLanguage(context: vscode.ExtensionContext, host: LanguageHost): { refresh(): void } {
+export function registerLanguage(context: vscode.ExtensionContext, host: LanguageHost): { refresh(): void; refreshSupport(): void } {
   const diagnostics = vscode.languages.createDiagnosticCollection(LANGUAGE_ID);
   const cache = new WeakMap<vscode.TextDocument, { version: number; result: CompileResult | undefined }>();
 
@@ -93,22 +98,38 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
     );
   };
 
+  const toDiagnostic = (p: Problem) => {
+    const d = new vscode.Diagnostic(
+      toVsRange(p.range),
+      p.message,
+      p.hint ? vscode.DiagnosticSeverity.Hint : p.warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
+    );
+    d.source = LANGUAGE_ID;
+    return d;
+  };
+
+  /** Conditions that can't match in some language, as far as the language servers seen so far tell. */
+  const unsupportedIn = (text: string) => {
+    const missing = host.missing?.() ?? [];
+    return missing.length ? unsupported(parseRulesFile(text), missing) : [];
+  };
+
   const validate = (doc: vscode.TextDocument) => {
     if (doc.languageId !== LANGUAGE_ID) return;
     vscode.window.visibleTextEditors.filter((e) => e.document === doc).forEach(decorate);
     const result = analyze(doc);
-    diagnostics.set(
-      doc.uri,
-      (result?.problems ?? []).map((p) => {
-        const d = new vscode.Diagnostic(
-          toVsRange(p.range),
-          p.message,
-          p.hint ? vscode.DiagnosticSeverity.Hint : p.warning ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
-        );
-        d.source = LANGUAGE_ID;
-        return d;
-      }),
-    );
+    diagnostics.set(doc.uri, [...(result?.problems ?? []), ...unsupportedIn(doc.getText())].map(toDiagnostic));
+  };
+
+  /**
+   * The rules files in use that aren't open get their unsupported conditions too, so the Problems
+   * panel shows them as soon as a language server turns out to lack something.
+   */
+  const validateClosed = () => {
+    const open = new Set(vscode.workspace.textDocuments.map((d) => d.uri.toString()));
+    for (const { uri, text } of host.sources?.() ?? []) {
+      if (!open.has(uri.toString())) diagnostics.set(uri, unsupportedIn(text).map(toDiagnostic));
+    }
   };
 
   const selector: vscode.DocumentSelector = { language: LANGUAGE_ID };
@@ -162,7 +183,10 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
     vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach(decorate)),
     vscode.workspace.onDidOpenTextDocument(validate),
     vscode.workspace.onDidChangeTextDocument((e) => validate(e.document)),
-    vscode.workspace.onDidCloseTextDocument((d) => diagnostics.delete(d.uri)),
+    vscode.workspace.onDidCloseTextDocument((d) => {
+      diagnostics.delete(d.uri);
+      validateClosed();
+    }),
 
     vscode.languages.registerColorProvider(selector, {
       provideDocumentColors(doc) {
@@ -356,6 +380,12 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
         cache.delete(doc);
         validate(doc);
       }
+      validateClosed();
+    },
+    /** Re-checks unsupported conditions: after new rules, or when a language server lacks something. */
+    refreshSupport() {
+      vscode.workspace.textDocuments.forEach(validate);
+      validateClosed();
     },
   };
 }

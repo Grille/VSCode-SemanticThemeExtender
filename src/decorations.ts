@@ -16,6 +16,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import * as vscode from "vscode";
 import { conditionText, patternToRegExp, TokenCondition } from "./cfg";
 import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
+import { featureOf, Support, unsupportedText } from "./support";
 import { parseSelector, TokenRegistry } from "./theme";
 
 // Redraw this long after an edit; a document that just came into view is drawn right away.
@@ -319,6 +320,17 @@ const taggingChain = new AsyncLocalStorage<Set<DocData>>();
 const CROSS_WAIT_MS = 2000;
 type Log = (line: string) => void;
 
+/** Every kind of atom in c. */
+function kindsOf(c: Condition, out: Set<Condition["kind"]>) {
+  out.add(c.kind);
+  if ("inner" in c) kindsOf(c.inner, out);
+  else if (c.kind === "not") kindsOf(c.operand, out);
+  else if (c.kind === "and" || c.kind === "or") {
+    kindsOf(c.left, out);
+    kindsOf(c.right, out);
+  }
+}
+
 const fileName = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf("/") + 1);
 
 /** Runs f over items, a few at a time. */
@@ -352,6 +364,9 @@ class DocData {
   private allDocs = false;
   /** True once definitions in other files are looked up. */
   imported = false;
+  /** Where symbols' names start ("line:char"): those tokens declare something. */
+  private declared = new Set<string>();
+  private probedHierarchy = false;
 
   constructor(
     readonly doc: vscode.TextDocument,
@@ -366,8 +381,34 @@ class DocData {
     /** Some rule uses doc(). */
     private readonly docs: boolean,
     private readonly log: Log,
+    private readonly support: Support,
   ) {
-    for (const s of symbols) this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
+    for (const s of symbols) {
+      this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
+      if (s.nameRange) this.declared.add(`${s.nameRange.start.line}:${s.nameRange.start.character}`);
+    }
+  }
+
+  /** Whether the token names something declared here: the server says so, or a symbol's name is there. */
+  declares(t: Token): boolean {
+    return t.modifiers.includes("declaration") || this.declared.has(`${t.range.start.line}:${t.range.start.character}`);
+  }
+
+  /**
+   * Whether the language server has a type hierarchy, asked once at a type declaration: any server
+   * that has one answers there.
+   */
+  private async probeHierarchy() {
+    const language = this.doc.languageId;
+    if (this.probedHierarchy || this.support.known(language, "typeHierarchy")) return;
+    this.probedHierarchy = true;
+    const t = this.tokens.find((t) => t.chain.some((c) => TYPE_TOKENS.includes(c)) && this.declares(t));
+    if (!t) return;
+    const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
+      (r) => r ?? [],
+      () => [],
+    );
+    this.support.report(language, "typeHierarchy", items.length > 0, fileName(this.doc.uri));
   }
 
   /**
@@ -496,13 +537,17 @@ class DocData {
     const todo = tokens.filter((t) => !this.hovers.has(t.text) && !seen.has(t.text) && seen.add(t.text)).slice(0, MAX_REFS);
     if (!todo.length) return;
     const start = Date.now();
+    let answered = false;
     await inBatches(todo, async (t) => {
       const hovers = await vscode.commands.executeCommand<vscode.Hover[]>("vscode.executeHoverProvider", this.doc.uri, t.range.start).then(
         (r) => r ?? [],
         () => [],
       );
+      answered ||= hovers.length > 0;
       this.hovers.set(t.text, hoverText(hovers));
     });
+    // Any server with hovers has one for a declaration.
+    if (answered || todo.some((t) => this.declares(t))) this.support.report(this.doc.languageId, "hovers", answered, fileName(this.doc.uri));
     if (todo.length > 1) this.log(`${fileName(this.doc.uri)}: ${todo.length} hovers for doc() / signature() in ${Date.now() - start} ms`);
   }
 
@@ -519,6 +564,7 @@ class DocData {
         else if (this.allDocs) await this.fetchDocs(this.tokens);
         return;
       case "inherits":
+        await this.probeHierarchy();
         await this.prepare(c.inner);
         if (!this.inherited.has(c)) this.inherited.set(c, this.computeInherits(c.inner));
         this.ready.set(c, await this.inherited.get(c)!);
@@ -681,6 +727,8 @@ export class TokenDecorator implements vscode.Disposable {
   /** Analyzed documents by URI, valid for one document version. */
   private cache = new Map<string, { version: number; data: Promise<DocData | undefined> }>();
   private readonly subscriptions: vscode.Disposable[];
+  /** What each language's server turned out to provide, for warnings on conditions that can't match. */
+  readonly support = new Support();
 
   constructor(
     private readonly registry: () => TokenRegistry | undefined,
@@ -763,6 +811,12 @@ export class TokenDecorator implements vscode.Disposable {
       if (!data.test(m.when, token)) continue;
       const silenced = ignored(doc, token.range.start.line, m.code) ? " [ignored here]" : "";
       lines.push(`  message${m.code ? ` ${m.code}` : ""}: ${messageFor(m, token)}  (${m.source})${silenced}`);
+    }
+    const kinds = new Set<Condition["kind"]>();
+    for (const r of [...rules.map(({ r }) => r), ...this.tags, ...this.messages]) if (inFolder(r.folder, doc.uri)) kindsOf(r.when, kinds);
+    for (const kind of kinds) {
+      const feature = featureOf(kind);
+      if (feature && this.support.lacks(doc.languageId, feature)) lines.push(`  ${unsupportedText(kind, doc.languageId)}`);
     }
     return lines;
   }
@@ -860,13 +914,18 @@ export class TokenDecorator implements vscode.Disposable {
     const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", doc.uri);
     const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", doc.uri);
     if (!legend || !tokens) return undefined;
+    const decoded = this.decode(doc, legend, tokens.data);
     const symbols = this.needsSymbols() ? await this.symbols(doc) : [];
+    // Any server with symbols has some for a file that declares something.
+    if (this.needsSymbols() && (symbols.length || decoded.some((t) => t.modifiers.includes("declaration")))) {
+      this.support.report(doc.languageId, "symbols", symbols.length > 0, fileName(doc.uri));
+    }
     const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
     const custom = new Set(this.tags.flatMap((t) => t.modifiers));
     const all = [...this.rules, ...this.tags, ...this.messages];
     const follow = all.some((r) => usesContains(r.when));
     const docs = all.some((r) => usesDoc(r.when));
-    return new DocData(doc, this.decode(doc, legend, tokens.data), symbols, this.load, tags, custom, follow, docs, this.log);
+    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */
@@ -915,6 +974,7 @@ export class TokenDecorator implements vscode.Disposable {
   }
 
   dispose() {
+    this.support.dispose();
     this.diagnostics.dispose();
     this.timers.forEach((t) => clearTimeout(t));
     this.types.forEach((t) => t.dispose());

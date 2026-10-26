@@ -123,7 +123,12 @@ export const world = {
   trusted: true,
   requests: { hover: 0, definition: 0, typeHierarchy: 0 },
   output: [] as string[],
+  /** Languages whose scripted server lacks a feature, like TypeScript's type hierarchy. */
+  lacking: new Map<string, Set<"typeHierarchy" | "symbols" | "hovers">>(),
 };
+
+const lacks = (uri: Uri, feature: "typeHierarchy" | "symbols" | "hovers") =>
+  !!world.lacking.get(world.files.get(uri.toString())?.language ?? "python")?.has(feature);
 
 export function reset() {
   world.files.clear();
@@ -140,6 +145,7 @@ export function reset() {
   world.trusted = true;
   world.requests = { hover: 0, definition: 0, typeHierarchy: 0 };
   world.output = [];
+  world.lacking.clear();
   window.visibleTextEditors.length = 0;
 }
 
@@ -255,10 +261,11 @@ const scripted: Handlers = {
   },
   "vscode.executeDocumentSymbolProvider": (uri: Uri) => {
     const spec = world.files.get(uri.toString());
-    return spec ? symbolsOf(spec) : [];
+    return spec && !lacks(uri, "symbols") ? symbolsOf(spec) : [];
   },
   "vscode.executeHoverProvider": (uri: Uri, pos: Position) => {
     world.requests.hover++;
+    if (lacks(uri, "hovers")) return [];
     const word = wordAt(uri, pos);
     const md = word && world.files.get(uri.toString())?.hovers?.[word];
     return md ? [{ contents: [{ value: md }] }] : [];
@@ -271,6 +278,7 @@ const scripted: Handlers = {
   },
   "vscode.prepareTypeHierarchy": (uri: Uri, pos: Position) => {
     world.requests.typeHierarchy++;
+    if (lacks(uri, "typeHierarchy")) return [];
     const word = wordAt(uri, pos);
     const item = word && declarationItem(word);
     return item ? [item] : [];
