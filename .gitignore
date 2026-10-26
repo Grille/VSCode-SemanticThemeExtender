@@ -4,3 +4,4 @@ out/
 out-test/
 test/fixtures/projects/csharp/bin/
 test/fixtures/projects/csharp/obj/
+.vscode-test/

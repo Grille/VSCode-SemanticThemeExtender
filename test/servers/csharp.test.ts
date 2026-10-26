@@ -50,9 +50,10 @@ describe(`C#, with ${spec.name}`, { skip: unavailable(spec) }, () => {
       const tokens = await server.describeTokens(main, (t) => ["Slotted", "Serializable", "Obsolete", "Make", "X"].includes(t));
       // An [Obsolete] method is type 0 (namespace) plus deprecated, without "method": VS Code
       // shows the same (checked with Developer: Inspect Editor Tokens and Scopes).
-      // A base type from another file comes as a variable here, but as a class in VS Code with
-      // C# Dev Kit. Not timing, request kind, client capabilities, open files or URI spelling;
-      // most likely Dev Kit's project loading, which can't run outside VS Code.
+      // A base type from another file comes as a variable here, but as a class in VS Code
+      // (test/vscode): Roslyn says variable while it doesn't have the project, and project/open
+      // alone apparently doesn't give it all of it. Not timing, request kind, client
+      // capabilities, open files or URI spelling.
       assert.deepEqual(tokens, ["4:Slotted=variable", "14:Serializable=class", "17:X=field", "19:Obsolete=class", "20:Make=namespace.deprecated"]);
     });
 
@@ -110,7 +111,7 @@ describe(`C#, with ${spec.name}`, { skip: unavailable(spec) }, () => {
     });
 
     it("doc() reads the documentation without Markdown escapes", async () => {
-      // No "class": without Dev Kit this Slotted comes as a variable (see above).
+      // No "class": here this Slotted comes as a variable (see above).
       const main = await expect(['doc("*marker. @struct*") = #AA0000'], { "#AA0000": ["4:Slotted"] });
       assert.deepEqual(messages(main), []);
     });

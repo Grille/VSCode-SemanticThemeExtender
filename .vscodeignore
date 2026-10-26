@@ -11,3 +11,4 @@ theme_extension.cfg
 *.vsix
 scripts/**
 examples/**
+.vscode-test/**

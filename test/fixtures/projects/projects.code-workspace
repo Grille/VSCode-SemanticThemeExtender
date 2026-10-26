@@ -1,0 +1,4 @@
+{
+  "folders": [{ "path": "python" }, { "path": "typescript" }, { "path": "csharp" }],
+  "settings": {}
+}

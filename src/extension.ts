@@ -83,7 +83,13 @@ export function activate(context: vscode.ExtensionContext) {
   vscode.workspace.textDocuments.forEach(refillRulesTab);
 
   schedule(true);
+  return api;
 }
+
+/** What tests running in VS Code read: what Inspect Token would print. */
+export const api = {
+  inspect: (doc: vscode.TextDocument, pos: vscode.Position) => decorator.inspect(doc, pos),
+};
 
 /**
  * A rules tab whose read failed, e.g. while the extension host was restarting, stays empty and
