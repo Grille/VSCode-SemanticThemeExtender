@@ -30,6 +30,19 @@ export async function settle(ms = 60) {
   for (let k = 0; k < 4; k++) await new Promise((r) => setTimeout(r, ms / 4));
 }
 
+/** Retries a check until it passes, for results that arrive when a real language server is ready. */
+export async function eventually(check: () => void, timeoutMs = 30_000) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return check();
+    } catch (e) {
+      if (Date.now() > end) throw e;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+}
+
 /**
  * A decorator with these rules, as the extension sets it up: global rules first, then project rules
  * limited to their folder.

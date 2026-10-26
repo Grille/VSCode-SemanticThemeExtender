@@ -2,3 +2,5 @@
 node_modules/
 out/
 out-test/
+test/fixtures/projects/csharp/bin/
+test/fixtures/projects/csharp/obj/

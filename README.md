@@ -68,7 +68,7 @@ override ui {
 | `text("__slots__") variable.classMember`, `text("__*__", "_*") *` | Only tokens with one of these texts (`*` wildcards) |
 | `contains(text("__slots__") variable.classMember) class` | Only tokens naming a symbol (class, function, …) that directly contains a match: classes that define `__slots__`, at their declaration and wherever they're used, also in other workspace files (the use is looked up with go to definition, a moment after the rest is drawn). Uses the language server's document symbols. The inside is a selector expression too: `contains(text("__enter__") method \| text("__aenter__") method)` |
 | `within(class text("Ctx")) method` | Only tokens inside a symbol whose name token matches: here methods of a class named `Ctx`. Same file, from document symbols |
-| `decorated(text("dataclass")) class` | Only tokens naming a symbol with a matching decorator or attribute: Python `@dataclass`, C# `[Serializable]`, Java annotations, TS decorators. Counts the tokens before the symbol's name, in its range or on the lines right above starting with `@` or `[`. At the declaration and wherever it's used, also in other files, like `contains`. C# attribute names are `class` tokens and may be written with or without `Attribute`: `decorated(text("Obsolete", "ObsoleteAttribute"))` |
+| `decorated(text("dataclass")) class` | Only tokens naming a symbol with a matching decorator or attribute: Python `@dataclass`, C# `[Serializable]`, Java annotations, TS decorators. Counts the tokens before the symbol's name, in its range or on the lines right above starting with `@` or `[`. At the declaration and wherever it's used, also in other files, like `contains`. C# attribute names are `class` tokens and may be written with or without `Attribute`: `decorated(text("Obsolete", "ObsoleteAttribute"))`. C# reports `[Obsolete]` members as `namespace.deprecated`, not `method`, so leave the type out there or use `*.deprecated` |
 | `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance, C# and TypeScript provide it), so it appears a little later |
 | `@slots => contains(text("__slots__") variable.classMember)` | A named selector expression, used as `@slots` in any head: `@slots class = …`, `inherits(@slots) class`, `@slots & !contains(…) class`, or alone: `@slots = …`. Top level only, assigned once, usable before its declaration |
 | `contains(…) class += slotted` | Custom modifiers: tokens the head matches get `slotted`, as if the language server had reported it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in another rules file. Assignments run in order, global rules first, then the project's. A name used in one file and defined in another workspace file gets the custom modifiers of its definition (asked of the language server's go to definition), a moment after the rest is drawn. Modifiers no language server defines count as custom ones, except as plain names after `string`, `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write `*.foo`, `semantic variable.foo`, or use it in an expression. Rules with custom modifiers are drawn as decorations; one that nothing in the same file assigns gets a hint, in case it's a typo |
@@ -189,8 +189,19 @@ npm test
 runs the tests in [test/](test/) with Node's test runner, against a fake `vscode` module
 ([test/fake-vscode.ts](test/fake-vscode.ts)): two small themes and a scripted language server
 (tokens, symbols, hovers, definitions, type hierarchy) over in-memory files, so results don't
-depend on what is installed. What real language servers return (Pylance, C#) is still only
-checked by hand in the Extension Development Host.
+depend on what is installed.
+
+```sh
+npm run test:servers
+```
+
+runs the decorator against real language servers on the projects in
+[test/fixtures/projects](test/fixtures/projects): basedpyright for Python (Pylance's license
+doesn't allow running it outside VS Code; basedpyright shares its Pyright core but has no type
+hierarchy), typescript-language-server, and the Roslyn server of an installed C# extension (run
+`dotnet restore` in the C# fixture once). Suites whose server isn't installed are skipped. The
+first part of each suite pins down what the server reports (token types, symbol ranges, hover
+format), so a server update that changes an assumption fails there.
 
 The list of UI color IDs and their defaults ([src/uiColors.ts](src/uiColors.ts)) is
 generated from VS Code's own code, since VS Code has no API for it:

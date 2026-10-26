@@ -38,7 +38,8 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "tsc -p tsconfig.test.json && node --test --test-reporter=spec \"out-test/test/**/*.test.js\"",
+    "test": "tsc -p tsconfig.test.json && node --test --test-reporter=spec \"out-test/test/*.test.js\"",
+    "test:servers": "tsc -p tsconfig.test.json && node --test --test-reporter=spec --test-concurrency=1 \"out-test/test/servers/*.test.js\"",
     "vscode:prepublish": "npm run compile"
   },
   "capabilities": {
@@ -108,6 +109,8 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "@types/vscode": "^1.80.0",
-    "typescript": "^5.9.3"
+    "basedpyright": "^1.40.2",
+    "typescript": "^5.9.3",
+    "typescript-language-server": "^6.0.2"
   }
 }

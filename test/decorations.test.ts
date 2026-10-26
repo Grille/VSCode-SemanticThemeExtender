@@ -195,6 +195,41 @@ describe("symbol conditions", () => {
   });
 });
 
+describe("what real servers do differently", () => {
+  it("symbol names with signatures still match their tokens (C#)", async () => {
+    const doc = addFile("file:///c.cs", {
+      language: "csharp",
+      lines: ["class Point {", "  [Obsolete]", "  Point Make() { return new Point(); }", "}"],
+      tokens: [
+        { line: 0, text: "Point", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "Obsolete", type: "class" },
+        { line: 2, text: "Make", type: "method", modifiers: ["declaration"] },
+        { line: 2, text: "Point", type: "class", nth: 1 },
+      ],
+      symbols: [{ name: "Point", kind: K.Class, from: 0, to: 3, nameLine: 0, children: [{ name: "Make", label: "Make() : Point", kind: K.Method, from: 1, to: 2, nameLine: 2 }] }],
+    });
+    show(doc);
+    d = decorator(['decorated(text("Obsolete")) method = #AA0000', 'contains(text("Point") class) method = #00AA00']);
+    await settle(80);
+    // Equally specific; the later rule wins.
+    assert.deepEqual(colors(doc), { "#00AA00": ["2:Make"] });
+  });
+
+  it("Markdown escapes in hovers aren't documentation (C#)", async () => {
+    world.folders = [];
+    const doc = addFile("file:///e.cs", {
+      language: "csharp",
+      lines: ["class A {}"],
+      tokens: [{ line: 0, text: "A", type: "class", modifiers: ["declaration"] }],
+      hovers: { A: "```csharp\r\nclass A\r\n```\r\n  \r\nA marker\\. Done\\!  \r\n" },
+    });
+    show(doc);
+    d = decorator(['doc("A marker. Done!") = #AA0000']);
+    await settle(80);
+    assert.deepEqual(colors(doc), { "#AA0000": ["0:A"] });
+  });
+});
+
 describe("custom modifiers", () => {
   const TAGS = [`language(python) ${SLOTS} class += slotted`, "inherits(class.slotted) & !class.slotted += leaky"];
 

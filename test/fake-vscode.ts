@@ -82,6 +82,8 @@ export interface TokenSpec {
 
 export interface SymbolSpec {
   name: string;
+  /** The name as the server reports it, if different: C# adds signatures ("Make() : Point"). */
+  label?: string;
   kind: number;
   /** Lines (inclusive) the symbol spans; its name is looked up on nameLine. */
   from: number;
@@ -130,6 +132,8 @@ export function reset() {
   world.bases.clear();
   world.settings = { "workbench.colorTheme": "Test Dark" };
   world.decorations.clear();
+  server = undefined;
+  opener = undefined;
   world.diagnostics.clear();
   world.codeActionProviders = [];
   world.folders = [];
@@ -217,7 +221,7 @@ function symbolsOf(spec: FileSpec) {
   const sym = (s: SymbolSpec): any => {
     const at = spec.lines[s.nameLine].indexOf(s.name);
     return {
-      name: s.name,
+      name: s.label ?? s.name,
       kind: s.kind,
       range: new Range(s.from, 0, s.to, spec.lines[s.to].length),
       selectionRange: new Range(s.nameLine, at, s.nameLine, at + s.name.length),
@@ -241,7 +245,9 @@ function declarationItem(name: string) {
   return { name, uri: Uri.parse(at.uri), selectionRange: new Range(at.line, col, at.line, col + name.length) };
 }
 
-const commandHandlers: Record<string, (...args: any[]) => any> = {
+type Handlers = Record<string, (...args: any[]) => any>;
+
+const scripted: Handlers = {
   "vscode.provideDocumentSemanticTokensLegend": () => ({ tokenTypes: TOKEN_TYPES, tokenModifiers: TOKEN_MODIFIERS }),
   "vscode.provideDocumentSemanticTokens": (uri: Uri) => {
     const spec = world.files.get(uri.toString());
@@ -274,6 +280,23 @@ const commandHandlers: Record<string, (...args: any[]) => any> = {
     return (world.bases.get(item.name) ?? []).map(declarationItem).filter(Boolean);
   },
 };
+
+// A real language server's answers instead of the scripted ones, and how to open files for it.
+let server: Handlers | undefined;
+let opener: ((uri: Uri) => FakeDoc | undefined) | undefined;
+
+/** Routes the language server commands to these handlers; documents not added yet come from open(). */
+export function useLanguageServer(handlers: Handlers, open: (uri: Uri) => FakeDoc | undefined) {
+  server = handlers;
+  opener = open;
+}
+
+/** A document for a file's text, e.g. one read from disk for a real language server. */
+export function addDocument(uri: Uri, text: string, languageId: string): FakeDoc {
+  const doc = makeDoc(uri, text.split(/\r?\n/), languageId);
+  world.docs.set(uri.toString(), doc);
+  return doc;
+}
 
 let decorationTypes = 0;
 
@@ -376,7 +399,7 @@ const vscode = {
       };
     },
     openTextDocument: async (uri: Uri) => {
-      const doc = world.docs.get(uri.toString());
+      const doc = world.docs.get(uri.toString()) ?? opener?.(uri);
       if (!doc) throw new Error(`No such document: ${uri}`);
       return doc;
     },
@@ -418,7 +441,7 @@ const vscode = {
     setTextDocumentLanguage: async () => undefined,
   },
   commands: {
-    executeCommand: async (command: string, ...args: any[]) => commandHandlers[command]?.(...args),
+    executeCommand: async (command: string, ...args: any[]) => (server ?? scripted)[command]?.(...args),
     registerCommand: () => disposable,
   },
 };
@@ -426,7 +449,11 @@ const vscode = {
 // Themes, languages and a language server's token types come from small extensions in
 // test/fixtures, never from an installed VS Code.
 for (const name of ["themes", "language-server"]) {
-  const dir = path.join(__dirname, "..", "..", "test", "fixtures", name);
+  addExtension(path.join(__dirname, "..", "..", "test", "fixtures", name));
+}
+
+/** Makes an extension's contributions known, e.g. an installed language extension's token types. */
+export function addExtension(dir: string) {
   vscode.extensions.all.push({ extensionPath: dir, packageJSON: require(path.join(dir, "package.json")) });
 }
 

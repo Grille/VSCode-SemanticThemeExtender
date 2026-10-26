@@ -306,7 +306,8 @@ function hoverText(hovers: vscode.Hover[]): HoverText {
   // Markdown separators (Pylance puts --- between signature and docs) aren't documentation, and
   // would keep doc(/^.../) from ever matching the first words.
   const text = prose.join("\n").replace(/^\s*([-*_])(\s*\1){2,}\s*$/gm, "");
-  return { prose: text.trim(), code: code.join("\n") };
+  // Backslash escapes are Markdown, not documentation: C# writes "marker\." for "marker.".
+  return { prose: text.replace(/\\([\\`*_{}[\]()#+\-.!|<>~])/g, "$1").trim(), code: code.join("\n") };
 }
 
 type Loader = (uri: vscode.Uri) => Promise<DocData | undefined>;
@@ -585,13 +586,18 @@ class DocData {
     this.owners.set(inner, names);
     const hits = this.tokens.filter((t) => this.test(inner, t));
     for (const s of this.symbols) {
-      if (names.has(s.name)) continue;
+      if (names.has(this.nameOf(s))) continue;
       const nested = this.symbols.filter((o) => o !== s && SCOPES.has(o.kind) && inside(o.range, s.range));
       // A nested method's or class's name is a member of s; only its inside is not.
       const hidden = (t: Token) => nested.some((o) => o.range.contains(t.range) && !o.nameRange?.contains(t.range));
-      if (hits.some((t) => s.range.contains(t.range) && !hidden(t))) names.add(s.name);
+      if (hits.some((t) => s.range.contains(t.range) && !hidden(t))) names.add(this.nameOf(s));
     }
     return names;
+  }
+
+  /** What tokens naming the symbol say: C# symbol names carry signatures ("Make() : Point"). */
+  private nameOf(s: Sym): string {
+    return this.names.get(s)?.text ?? s.name;
   }
 
   /**
@@ -607,13 +613,13 @@ class DocData {
     names = new Set<string>();
     this.owners.set(c, names);
     for (const s of this.symbols) {
-      if (!s.nameRange || names.has(s.name)) continue;
+      if (!s.nameRange || names.has(this.nameOf(s))) continue;
       let first = s.range.start.line;
       while (first > 0 && /^\s*[@[]/.test(this.doc.lineAt(first - 1).text)) first--;
       const name = s.nameRange.start;
       const header = (t: Token) =>
         t.range.start.isBefore(name) && (s.range.contains(t.range) || (t.range.start.line >= first && t.range.start.line < s.range.start.line));
-      if (this.tokens.some((t) => header(t) && this.test(c.inner, t))) names.add(s.name);
+      if (this.tokens.some((t) => header(t) && this.test(c.inner, t))) names.add(this.nameOf(s));
     }
     return names;
   }
