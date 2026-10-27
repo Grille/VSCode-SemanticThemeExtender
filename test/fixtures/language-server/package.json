@@ -1,5 +1,7 @@
 {
   "name": "test-language-server",
+  "publisher": "test",
+  "activationEvents": ["onLanguage:python"],
   "description": "Plays Pylance's contributions: its own token types and modifiers, and their TextMate scopes.",
   "contributes": {
     "semanticTokenTypes": [

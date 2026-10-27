@@ -16,7 +16,7 @@ import { AsyncLocalStorage } from "async_hooks";
 import * as vscode from "vscode";
 import { conditionText, patternToRegExp, TokenCondition } from "./cfg";
 import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
-import { featureOf, Support, unsupportedText } from "./support";
+import { featureOf, serversFor, Support, unsupportedText } from "./support";
 import { parseSelector, TokenRegistry } from "./theme";
 
 // Redraw this long after an edit; a document that just came into view is drawn right away.
@@ -42,7 +42,7 @@ interface Matcher {
 
 /** A condition ready to evaluate: texts as regular expressions, selectors parsed. */
 type Condition =
-  | { kind: "language"; ids: string[] }
+  | { kind: "language" | "server"; ids: string[] }
   /** Several patterns mean any of them. */
   | { kind: "text" | "doc" | "signature"; tests: RegExp[] }
   | { kind: "selector"; matcher: Matcher }
@@ -209,7 +209,8 @@ function decorationOptions(style: StyleValue): vscode.DecorationRenderOptions {
 function compileCondition(c: TokenCondition): Condition {
   switch (c.kind) {
     case "language":
-      return { kind: "language", ids: c.ids };
+    case "server":
+      return { kind: c.kind, ids: c.ids };
     case "text":
       return { kind: "text", tests: c.patterns.map((p) => patternToRegExp(p)) };
     case "doc":
@@ -250,7 +251,7 @@ function specificity(when: TokenCondition): number {
       type ||= s.type !== "*";
       modifiers = Math.max(modifiers, s.modifiers.length);
       language ||= !!s.language;
-    } else if (c.kind === "language") language = true;
+    } else if (c.kind === "language" || c.kind === "server") language = true;
     else if (c.kind === "text") text = Math.max(text, c.patterns.some((p) => typeof p !== "string" || p.includes("*")) ? 1 : 2);
     else if (["contains", "within", "inherits", "decorated", "doc", "signature"].includes(c.kind)) symbols++;
     else if (c.kind === "and") {
@@ -382,6 +383,8 @@ class DocData {
     private readonly docs: boolean,
     private readonly log: Log,
     private readonly support: Support,
+    /** The extensions that may be this document's language server, lowercase. */
+    readonly servers: string[],
   ) {
     for (const s of symbols) {
       this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
@@ -591,6 +594,8 @@ class DocData {
     switch (c.kind) {
       case "language":
         return c.ids.includes(this.doc.languageId);
+      case "server":
+        return c.ids.some((id) => this.servers.includes(id));
       case "text":
         return c.tests.some((r) => r.test(t.text));
       case "doc":
@@ -798,6 +803,7 @@ export class TokenDecorator implements vscode.Disposable {
     const lines = [
       `'${token.text}'  ${type}${supers.length ? ` (a kind of ${supers.join(", ")})` : ""}, ${doc.languageId}`,
       `  modifiers from the language server: ${token.modifiers.filter((m) => !origins.has(m)).join(", ") || "none"}`,
+      `  servers: ${data.servers.join(", ") || "none known"}  (server(...) matches these)`,
     ];
     for (const [m, origin] of origins) lines.push(`  custom modifier ${m}: ${origin}`);
     if (!matching.length) {
@@ -925,7 +931,7 @@ export class TokenDecorator implements vscode.Disposable {
     const all = [...this.rules, ...this.tags, ...this.messages];
     const follow = all.some((r) => usesContains(r.when));
     const docs = all.some((r) => usesDoc(r.when));
-    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support);
+    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support, serversFor(doc.languageId));
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */

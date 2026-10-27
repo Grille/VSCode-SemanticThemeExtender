@@ -5,7 +5,7 @@ import { CONDITION_ARGS, conditionText, FLAGS, NAME_KINDS, NameKind, parseRulesF
 import { Color, toHex } from "./color";
 import { compile, CompileResult } from "./engine";
 import { FUNCTIONS } from "./rules";
-import { Missing, unsupported } from "./support";
+import { languagesOfServer, Missing, unknownServers, unsupported } from "./support";
 import { ThemeResolver } from "./theme";
 
 export const LANGUAGE_ID = "semantic-theme-rules";
@@ -23,7 +23,7 @@ const STYLES = [...STYLE_NAMES];
 export const PROJECT_FILE = ".vscode/semantic-theme.str";
 export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
 
-const KEYWORDS = new Set(["match", "style", "override", "language", "text", "doc", "signature", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);
+const KEYWORDS = new Set(["match", "style", "override", "language", "server", "text", "doc", "signature", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
@@ -111,14 +111,15 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
   /** Conditions that can't match in some language, as far as the language servers seen so far tell. */
   const unsupportedIn = (text: string) => {
     const missing = host.missing?.() ?? [];
-    return missing.length ? unsupported(parseRulesFile(text), missing) : [];
+    return missing.length ? unsupported(parseRulesFile(text), missing, languagesOfServer) : [];
   };
 
   const validate = (doc: vscode.TextDocument) => {
     if (doc.languageId !== LANGUAGE_ID) return;
     vscode.window.visibleTextEditors.filter((e) => e.document === doc).forEach(decorate);
     const result = analyze(doc);
-    diagnostics.set(doc.uri, [...(result?.problems ?? []), ...unsupportedIn(doc.getText())].map(toDiagnostic));
+    const uninstalled = unknownServers(parseRulesFile(doc.getText()), (id) => !!vscode.extensions.getExtension(id));
+    diagnostics.set(doc.uri, [...(result?.problems ?? []), ...uninstalled, ...unsupportedIn(doc.getText())].map(toDiagnostic));
   };
 
   /**
@@ -229,6 +230,16 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
           return new vscode.Hover(md, range);
         }
 
+        if (/\bserver\([^)]*$/.test(line.slice(0, range.start.character))) {
+          const e = vscode.extensions.getExtension(word);
+          md.appendMarkdown(
+            e
+              ? `**${e.packageJSON?.displayName ?? word}** (\`${e.id}\`): starts for ${languagesOfServer(word)?.join(", ") || "no language"}; ${e.isActive ? "active" : "not active"} in this window`
+              : `**${word}** isn't installed`,
+          );
+          return new vscode.Hover(md, range);
+        }
+
         if (word.startsWith("@")) {
           const e = parseRulesFile(doc.getText()).expressions.get(word.slice(1));
           md.appendMarkdown(e ? `**${word}**: \`${conditionText(stripCondition(e.cond))}\`` : `**${word}** is undefined or has an error`);
@@ -289,6 +300,19 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
             });
           }
 
+          if (where.kind === "server") {
+            return vscode.extensions.all
+              .map((e) => ({ e, languages: languagesOfServer(e.id) ?? [] }))
+              .filter(({ languages }) => languages.length)
+              .map(({ e, languages }) => {
+                const item = new vscode.CompletionItem(e.id.toLowerCase(), vscode.CompletionItemKind.Module);
+                item.detail = `${e.packageJSON?.displayName ?? e.id}: ${languages.join(", ")}${e.isActive ? "" : " (not active)"}`;
+                item.sortText = `${e.isActive ? 0 : 1}${e.id}`;
+                item.range = new vscode.Range(pos.line, pos.character - where.typed.length, pos.line, pos.character);
+                return item;
+              });
+          }
+
           if (where.kind === "variable") {
             const vars = analyze(doc)?.variables ?? new Map<string, Color>();
             const items = [...vars].map(([name, c]) => {
@@ -340,6 +364,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               snippet("doc", 'doc("${1:*deprecated*}") ${2:function}', vscode.CompletionItemKind.Keyword, 'Only tokens whose documentation (the hover, without code) matches; "*" wildcards, any case'),
               snippet("text", 'text("${1:__slots__}") ${2:variable}', vscode.CompletionItemKind.Keyword, 'Only tokens with this text ("*" wildcards), drawn over the language server\'s tokens'),
               snippet("language", "language(${1:python}) {\n\t$2\n}", vscode.CompletionItemKind.Keyword, "Rules for one or more languages: language(python, csharp)"),
+              snippet("server", "server(${1:ms-python.vscode-pylance}) {\n\t$2\n}", vscode.CompletionItemKind.Keyword, "Rules for documents an extension serves, by its ID: for what one language server reports differently from another"),
               snippet("ui", "ui {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules for UI colors, e.g. editorBracketHighlight.foreground1"),
               snippet("semantic", "semantic {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Only semantic rules, without their TextMate fallback scope"),
               snippet("textmate", "textmate {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Names taken literally as TextMate scopes"),
@@ -407,6 +432,7 @@ type CursorContext =
   | { kind: "none" }
   | { kind: "variable"; typed: string }
   | { kind: "expression"; typed: string }
+  | { kind: "server"; typed: string }
   | { kind: "pattern"; subject: string }
   | { kind: "selector" }
   | { kind: "value"; value: string };
@@ -434,6 +460,8 @@ function cursorContext(before: string): CursorContext {
   if (v) return { kind: "variable", typed: v[1] };
   const at = /@([\w-]*)$/.exec(current);
   if (at) return { kind: "expression", typed: at[1] };
+  const server = /\bserver\(\s*(?:[\w.-]+\s*,\s*)*([\w.-]*)$/.exec(current);
+  if (server) return { kind: "server", typed: server[1] };
 
   const line = lines[lines.length - 1];
   const top = stack[stack.length - 1];

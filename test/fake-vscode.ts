@@ -385,6 +385,7 @@ const vscode = {
   },
   extensions: {
     all: [] as any[],
+    getExtension: (id: string) => vscode.extensions.all.find((e) => e.id.toLowerCase() === id.toLowerCase()),
     onDidChange: event,
   },
   window,
@@ -462,7 +463,8 @@ for (const name of ["themes", "language-server"]) {
 
 /** Makes an extension's contributions known, e.g. an installed language extension's token types. */
 export function addExtension(dir: string) {
-  vscode.extensions.all.push({ extensionPath: dir, packageJSON: require(path.join(dir, "package.json")) });
+  const packageJSON = require(path.join(dir, "package.json"));
+  vscode.extensions.all.push({ id: `${packageJSON.publisher}.${packageJSON.name}`, isActive: true, extensionPath: dir, packageJSON });
 }
 
 const load = (Module as any)._load;

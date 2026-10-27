@@ -1,10 +1,10 @@
-import { addFile, Position, reset, show, SymbolKind as K, Uri, world } from "./fake-vscode";
+import { addFile, drawn, Position, reset, show, SymbolKind as K, Uri, world } from "./fake-vscode";
 import { strict as assert } from "assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
-import { parseRulesFile } from "../src/cfg";
+import { conditionText, parseRulesFile } from "../src/cfg";
 import { TokenDecorator } from "../src/decorations";
-import { Missing, Support, unsupported } from "../src/support";
-import { decorator, eventually } from "./helpers";
+import { Missing, Support, unknownServers, unsupported } from "../src/support";
+import { compileRules, decorator, errors, eventually } from "./helpers";
 
 const NO_HIERARCHY: Missing = { language: "typescript", feature: "typeHierarchy", file: "main.ts" };
 
@@ -123,5 +123,45 @@ describe("finding out what a language server provides", () => {
     d = decorator(['inherits(text("Base")) class = #AA0000', 'contains(text("x")) class = #00AA00']);
     await new Promise((r) => setTimeout(r, 300));
     assert.deepEqual(d.support.missing(), []);
+  });
+});
+
+describe("server()", () => {
+  let d: TokenDecorator | undefined;
+  beforeEach(() => reset());
+  afterEach(() => d?.dispose());
+
+  it("parses extension IDs, any case, and is drawn rather than written to settings", () => {
+    const r = compileRules(["server(Test.Test-Language-Server) class = #AA0000"]);
+    assert.deepEqual(errors(r), []);
+    assert.deepEqual(r.rules, {});
+    assert.deepEqual(r.textRules.map((t) => conditionText(t.when)), ["server(test.test-language-server) class"]);
+  });
+
+  it("matches documents of the languages an active extension starts for", async () => {
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const file = (name: string, language: string) =>
+      addFile(`file:///proj/${name}`, { language, lines: ["class A: pass"], tokens: [{ line: 0, text: "A", type: "class", modifiers: ["declaration"] }] });
+    const py = file("a.py", "python");
+    const ts = file("a.ts", "typescript");
+    show(py);
+    show(ts);
+    d = decorator(["server(test.test-language-server) class = #AA0000", "server(someone.else) class = #00AA00"]);
+    await eventually(() => assert.deepEqual(Object.values(drawn(py)), [["0:A"]]));
+    assert.equal(JSON.parse(Object.keys(drawn(py))[0]).color, "#AA0000");
+    assert.deepEqual(drawn(ts), {});
+  });
+
+  it("a hint where the extension isn't installed", () => {
+    const file = parseRulesFile(["server(ms-python.vscode-pylance) { class = #AA0000 }", "@x => server(nobody.there) class", "@x = #00AA00"].join("\n"));
+    const hints = unknownServers(file, (id) => id === "ms-python.vscode-pylance").map((p) => `${p.range.start.line + 1}: ${p.message}`);
+    assert.deepEqual(hints, ["2: 'nobody.there' isn't installed: server(...) takes the ID of an extension providing a language server, e.g. ms-python.vscode-pylance"]);
+  });
+
+  it("limits unsupported-condition warnings to the languages the extension starts for", () => {
+    const languages = (id: string) => (id === "ms-python.vscode-pylance" ? ["python"] : undefined);
+    const file = parseRulesFile('server(ms-python.vscode-pylance) { inherits(text("Base")) class = #AA0000 }');
+    assert.deepEqual(unsupported(file, [NO_HIERARCHY], languages), []);
+    assert.equal(unsupported(file, [NO_HIERARCHY]).length, 1, "an extension that isn't installed says nothing about languages");
   });
 });

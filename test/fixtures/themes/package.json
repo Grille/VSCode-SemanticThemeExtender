@@ -1,5 +1,6 @@
 {
   "name": "test-themes",
+  "publisher": "test",
   "contributes": {
     "themes": [
       { "label": "Test Dark", "uiTheme": "vs-dark", "path": "./dark.json" },

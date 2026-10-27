@@ -2,7 +2,7 @@
 // conditions in a rules file that can't match because of it.
 
 import * as vscode from "vscode";
-import { Cond, Problem, RulesFile, Stmt } from "./cfg";
+import { Cond, MessageRule, Problem, Rule, RulesFile, Stmt, TagRule } from "./cfg";
 
 /** Language server features some conditions need, beyond semantic tokens. */
 export type Feature = "typeHierarchy" | "symbols" | "hovers";
@@ -67,6 +67,27 @@ export class Support implements vscode.Disposable {
   }
 }
 
+/** The languages an extension starts for (onLanguage:python). */
+function startsFor(e: vscode.Extension<unknown>): string[] {
+  const events: unknown = (e.packageJSON as { activationEvents?: unknown })?.activationEvents;
+  return Array.isArray(events) ? events.filter((a): a is string => typeof a === "string" && a.startsWith("onLanguage:")).map((a) => a.slice("onLanguage:".length)) : [];
+}
+
+/**
+ * The active extensions that start for this language: the candidates for its language server, as
+ * server(...) sees them. VS Code doesn't say which extension answered a request, so with two
+ * servers for one language both count.
+ */
+export function serversFor(language: string): string[] {
+  return vscode.extensions.all.filter((e) => e.isActive && startsFor(e).includes(language)).map((e) => e.id.toLowerCase());
+}
+
+/** The languages an installed extension starts for; undefined when it isn't installed. */
+export function languagesOfServer(id: string): string[] | undefined {
+  const e = vscode.extensions.getExtension(id);
+  return e && startsFor(e);
+}
+
 /** The text Inspect Token and the rules file show for a condition that can't match. */
 export function unsupportedText(kind: Cond["kind"], language: string, file?: string): string | undefined {
   const feature = NEEDS[kind];
@@ -79,30 +100,9 @@ export const featureOf = (kind: Cond["kind"]): Feature | undefined => NEEDS[kind
  * Warnings on the conditions in the file that need a feature some language lacks, where the rule
  * can apply to that language: language(python) { inherits(...) ... } is fine for typescript.
  */
-export function unsupported(file: RulesFile, missing: Missing[]): Problem[] {
+export function unsupported(file: RulesFile, missing: Missing[], serverLanguages: (id: string) => string[] | undefined = () => undefined): Problem[] {
   const out = new Map<string, Problem>();
   if (!missing.length) return [];
-  const visit = (stmts: Stmt[]) => {
-    for (const st of stmts) {
-      switch (st.kind) {
-        case "rule":
-        case "tag":
-        case "message": {
-          const scope = intersect(languagesOf(st.head), st.when && languagesOf(st.when));
-          for (const c of [st.head, st.when]) if (c) atoms(c, scope);
-          break;
-        }
-        case "when":
-        case "override":
-        case "target":
-          visit(st.body);
-          break;
-        case "block":
-          st.arms.forEach((a) => visit(a.body));
-          break;
-      }
-    }
-  };
   const atoms = (c: Cond, scope: string[] | undefined) => {
     const feature = NEEDS[c.kind];
     if (feature) {
@@ -126,25 +126,75 @@ export function unsupported(file: RulesFile, missing: Missing[]): Problem[] {
         atoms(c.right, scope);
     }
   };
-  visit(file.stmts);
+  forEachRule(file.stmts, (st) => {
+    const scope = intersect(languagesOf(st.head, serverLanguages), st.when && languagesOf(st.when, serverLanguages));
+    for (const c of [st.head, st.when]) if (c) atoms(c, scope);
+  });
   return [...out.values()];
 }
 
-/** The languages a condition can hold in; undefined for any. */
-function languagesOf(c: Cond): string[] | undefined {
+/** Hints on server(...) IDs that aren't installed: rules with them apply nowhere. */
+export function unknownServers(file: RulesFile, installed: (id: string) => boolean): Problem[] {
+  const out = new Map<string, Problem>();
+  const walk = (c: Cond) => {
+    if (c.kind === "server") {
+      const missing = c.ids.filter((id) => !installed(id));
+      if (missing.length) {
+        const message = `${missing.map((id) => `'${id}'`).join(", ")} isn't installed: server(...) takes the ID of an extension providing a language server, e.g. ms-python.vscode-pylance`;
+        out.set(`${c.range.start.line}:${c.range.start.col}`, { range: c.range, message, hint: true });
+      }
+    } else if ("inner" in c) walk(c.inner);
+    else if (c.kind === "not") walk(c.operand);
+    else if (c.kind === "and" || c.kind === "or") {
+      walk(c.left);
+      walk(c.right);
+    }
+  };
+  forEachRule(file.stmts, (st) => [st.head, st.when].forEach((c) => c && walk(c)));
+  for (const e of file.expressions.values()) walk(e.cond);
+  return [...out.values()];
+}
+
+/** Every rule, += and := in the statements, also inside blocks. */
+function forEachRule(stmts: Stmt[], f: (st: Rule | TagRule | MessageRule) => void) {
+  for (const st of stmts) {
+    switch (st.kind) {
+      case "rule":
+      case "tag":
+      case "message":
+        f(st);
+        break;
+      case "when":
+      case "override":
+      case "target":
+        forEachRule(st.body, f);
+        break;
+      case "block":
+        st.arms.forEach((a) => forEachRule(a.body, f));
+        break;
+    }
+  }
+}
+
+/** The languages a condition can hold in; undefined for any. server(x) holds where x starts. */
+function languagesOf(c: Cond, serverLanguages: (id: string) => string[] | undefined): string[] | undefined {
   switch (c.kind) {
     case "language":
       return c.ids;
+    case "server": {
+      const all = c.ids.map(serverLanguages);
+      return all.every(Boolean) ? [...new Set(all.flat() as string[])] : undefined;
+    }
     case "selector": {
       // parameter:python
       const at = c.selector.lastIndexOf(":");
       return at >= 0 ? [c.selector.slice(at + 1)] : undefined;
     }
     case "and":
-      return intersect(languagesOf(c.left), languagesOf(c.right));
+      return intersect(languagesOf(c.left, serverLanguages), languagesOf(c.right, serverLanguages));
     case "or": {
-      const l = languagesOf(c.left);
-      const r = languagesOf(c.right);
+      const l = languagesOf(c.left, serverLanguages);
+      const r = languagesOf(c.right, serverLanguages);
       return l && r ? [...new Set([...l, ...r])] : undefined;
     }
     default:

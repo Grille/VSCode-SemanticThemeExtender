@@ -248,6 +248,7 @@ describe("custom modifiers", () => {
     assert.deepEqual(lines, [
       "'Slotted'  class, python",
       "  modifiers from the language server: none",
+      "  servers: test.test-language-server  (server(...) matches these)",
       "  custom modifier slotted: from the definition in base.py",
       '  drawn: class.slotted = "#AA0000"  (global rules, line 1)',
       '  also matches: text("Slotted") class = "#0000AA"  (global rules, line 2)',

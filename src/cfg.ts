@@ -23,7 +23,8 @@
 //                                      language(python) selfParameter, text("__slots__") variable,
 //                                      contains(text("__slots__") variable.classMember) class,
 //                                      within(class) method, inherits(contains(...)) class,
-//                                      decorated(text("dataclass")) class;
+//                                      decorated(text("dataclass")) class,
+//                                      server(ms-python.vscode-pylance) variable.classMember;
 //                                      side by side means &, also ! | and parentheses; a block's head
 //                                      and the heads inside must all hold. Plain selectors go to
 //                                      settings, anything else is drawn as decorations
@@ -180,7 +181,8 @@ export interface Target {
  */
 export type Cond =
   | { kind: "selector"; selector: string; range: Range }
-  | { kind: "language"; ids: string[]; range: Range }
+  /** language(python), server(ms-python.vscode-pylance): the document's language, or its language server's extension. */
+  | { kind: "language" | "server"; ids: string[]; range: Range }
   /** text: the token's own text; doc / signature: the prose / the code of its hover. */
   | { kind: "text" | "doc" | "signature"; patterns: TextPattern[]; range: Range }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Cond; range: Range }
@@ -191,7 +193,7 @@ export type Cond =
 /** A selector expression without source positions. */
 export type TokenCondition =
   | { kind: "selector"; selector: string }
-  | { kind: "language"; ids: string[] }
+  | { kind: "language" | "server"; ids: string[] }
   | { kind: "text" | "doc" | "signature"; patterns: TextPattern[] }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: TokenCondition }
   | { kind: "not"; operand: TokenCondition }
@@ -203,7 +205,8 @@ export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]
     case "selector":
       return c.selector;
     case "language":
-      return `language(${c.ids.join(", ")})`;
+    case "server":
+      return `${c.kind}(${c.ids.join(", ")})`;
     case "text":
     case "doc":
     case "signature":
@@ -232,7 +235,8 @@ export function stripCondition(c: Cond): TokenCondition {
     case "selector":
       return { kind: "selector", selector: c.selector };
     case "language":
-      return { kind: "language", ids: c.ids };
+    case "server":
+      return { kind: c.kind, ids: c.ids };
     case "text":
     case "doc":
     case "signature":
@@ -614,6 +618,14 @@ export function parseRulesFile(text: string): RulesFile {
       const close = expect(")", "')' to close language(...)");
       return { kind: "language", ids, range: span(t.range, close.range) };
     }
+    if (call("server")) {
+      next();
+      next();
+      // Extension IDs are case-insensitive.
+      const ids = parseList("ident", "an extension id like ms-python.vscode-pylance").map((id) => id.toLowerCase());
+      const close = expect(")", "')' to close server(...)");
+      return { kind: "server", ids, range: span(t.range, close.range) };
+    }
     for (const kind of ["contains", "within", "inherits", "decorated"] as const) {
       if (!call(kind)) continue;
       next();
@@ -629,7 +641,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return { kind: "selector", selector: t.text, range: t.range };
     }
-    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
+    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), server(...), contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
   }
 
   // ---- color expressions
@@ -677,7 +689,7 @@ export function parseRulesFile(text: string): RulesFile {
         if (t.text === "style") fail("style() must wrap the whole value, e.g. style(mix(class, function), bold)", t);
         if (!FUNCTION_NAMES.has(t.text)) {
           const flagNext = peek(1) && (isPunct(peek(1), "!") || (peek(1).type === "ident" && STYLE_NAMES.has(peek(1).text)));
-          if (["text", "doc", "signature", "language", "contains", "within", "inherits", "decorated"].includes(t.text)) {
+          if (["text", "doc", "signature", "language", "server", "contains", "within", "inherits", "decorated"].includes(t.text)) {
             fail(`${t.text}(...) is part of a selector expression, not a color; name one with @name => ${t.text}(...)`, t);
           }
           fail(`Unknown function '${t.text}'${flagNext ? `. For font styles write style(${t.text}, ...)` : ""}`, t);
@@ -1127,6 +1139,8 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   contains(text("__slots__") variable.classMember) class = ...   classes with such a member
 ;   decorated(text("dataclass")) class = ...   classes with such a decorator / [Attribute]
 ;   language(python, csharp) { rules }  semantic rules per language; inside, * alone means every type
+;   server(ms-python.vscode-pylance) { rules }  only where that extension serves the language:
+;                            for what one language server reports differently from another
 ;   ui | semantic | textmate say the kind instead of inferring it: textmate comment = #6A9955,
 ;                            semantic struct = ... (no TextMate fallback), ui { rules }, ui editor.background
 ;   override rule            also replaces the theme's own color; override { rules } for several

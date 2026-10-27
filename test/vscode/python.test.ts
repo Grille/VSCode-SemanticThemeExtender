@@ -73,5 +73,15 @@ describe("Python, with Pylance", () => {
         ),
       );
     });
+
+    it("server(): rules for what Pylance reports, not basedpyright", async () => {
+      await setRules(
+        'server(ms-python.vscode-pylance) text("__slots__") variable.classMember = #AA0000',
+        'server(detachhead.basedpyright) text("__slots__") property.classMember = #00AA00',
+      );
+      await eventually(async () => assert.equal(await drawnColor(main, 15, "__slots__"), "#AA0000"));
+      const servers = (await inspect(main, 15, "__slots__")).find((l) => l.startsWith("  servers: "));
+      assert.ok(servers?.includes("ms-python.vscode-pylance"), servers);
+    });
   });
 });
