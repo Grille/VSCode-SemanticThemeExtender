@@ -198,3 +198,35 @@ describe("conditions decided per document", () => {
     assert.deepEqual([world.requests.typeHierarchy, world.requests.hover], [0, 0]);
   });
 });
+
+describe("asking only about tokens the rest of a rule lets through", () => {
+  let d: TokenDecorator | undefined;
+  beforeEach(() => reset());
+  afterEach(() => d?.dispose());
+
+  it("doc() & class asks for hovers of classes, inherits() & class.declaration of those only", async () => {
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const py = addFile("file:///proj/a.py", {
+      lines: ["class Base: pass", "class Child(Base): pass", "x = 1", "y = 2", "def f(a): pass"],
+      tokens: [
+        { line: 0, text: "Base", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "Child", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "Base", type: "class" },
+        { line: 2, text: "x", type: "variable", modifiers: ["declaration"] },
+        { line: 3, text: "y", type: "variable", modifiers: ["declaration"] },
+        { line: 4, text: "f", type: "function", modifiers: ["declaration"] },
+        { line: 4, text: "a", type: "parameter", modifiers: ["declaration"] },
+      ],
+      hovers: { Base: "The base." },
+    });
+    world.declared.set("Base", { uri: "file:///proj/a.py", line: 0 });
+    world.declared.set("Child", { uri: "file:///proj/a.py", line: 1 });
+    world.bases.set("Child", ["Base"]);
+    show(py);
+    d = decorator(['doc("*base*") class = #AA0000', 'inherits(text("Base")) class.declaration & text("C*") = #00AA00']);
+    await eventually(() => assert.deepEqual(drawn(py), { [JSON.stringify({ color: "#AA0000" })]: ["0:Base", "1:Base"], [JSON.stringify({ color: "#00AA00" })]: ["1:Child"] }));
+    await new Promise((r) => setTimeout(r, 200));
+    // Hovers: Base and Child, not x, y, f, a. Type hierarchy: the probe at Base, then Child only.
+    assert.deepEqual([world.requests.hover, world.requests.typeHierarchy <= 3], [2, true]);
+  });
+});

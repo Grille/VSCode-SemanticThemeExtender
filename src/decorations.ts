@@ -379,6 +379,15 @@ async function inBatches<T>(items: T[], f: (x: T) => Promise<void>) {
   for (let i = 0; i < items.length; i += PARALLEL) await Promise.all(items.slice(i, i + PARALLEL).map(f));
 }
 
+/** Decided from a token alone, without asking the language server. */
+const isCheap = (c: Condition): boolean =>
+  c.kind === "selector" || c.kind === "text" || c.kind === "const" || c.kind === "language" || c.kind === "server" ||
+  (c.kind === "not" && isCheap(c.operand)) ||
+  ((c.kind === "and" || c.kind === "or") && isCheap(c.left) && isCheap(c.right));
+
+/** a & b & c as [a, b, c]. */
+const conjuncts = (c: Condition): Condition[] => (c.kind === "and" ? [...conjuncts(c.left), ...conjuncts(c.right)] : [c]);
+
 
 /**
  * One document's tokens and symbols, and the conditions evaluated on them. within() is answered from
@@ -389,7 +398,8 @@ async function inBatches<T>(items: T[], f: (x: T) => Promise<void>) {
  */
 class DocData {
   private owners = new Map<Condition, Set<string>>();
-  private inherited = new Map<Condition, Promise<Set<string>>>();
+  /** inherits(): the type names asked about so far (their answers on the way), and those that do. */
+  private inherited = new Map<Condition, Map<string, Promise<void>>>();
   private ready = new Map<Condition, Set<string>>();
   private names = new Map<Sym, Token | undefined>();
   /** Where each token's custom modifiers came from, for Inspect Token. */
@@ -502,11 +512,9 @@ class DocData {
 
   private async importTags() {
     await this.ensureTags();
-    if (this.docs) {
-      // Hovers are slow; the first pass is drawn without them.
-      this.allDocs = true;
-      await this.fetchDocs(this.tokens);
-    }
+    // Hovers are slow; the first pass is drawn without them. From now on doc() asks for them, for
+    // the tokens the rest of each rule lets through (prepare).
+    if (this.docs) this.allDocs = true;
     if (!this.custom.size && !this.follow) {
       if (this.docs) await this.applyTags();
       return;
@@ -604,6 +612,15 @@ class DocData {
     return this.prepareFolded(this.simplified(c), scope);
   }
 
+  /** Whether a type token's type has a base type whose name token meets inner. */
+  private async inheritsAt(t: Token, inner: Condition): Promise<boolean> {
+    const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
+      (r) => r ?? [],
+      () => [],
+    );
+    return this.anyBase(items, inner);
+  }
+
   /** c as it is in this document: see fold(). */
   simplified(c: Condition): Condition {
     let s = this.folded.get(c);
@@ -611,19 +628,37 @@ class DocData {
     return s;
   }
 
-  private async prepareFolded(c: Condition, scope?: Token[]): Promise<void> {
+  /**
+   * among: the tokens the cheap parts of an enclosing & let through, the only ones the language
+   * server needs to be asked about: for doc("*x*") class, the hovers of classes, not of every name.
+   */
+  private async prepareFolded(c: Condition, scope?: Token[], among?: Token[]): Promise<void> {
     switch (c.kind) {
       case "doc":
       case "signature":
         if (scope) await this.fetchDocs(scope);
-        else if (this.allDocs) await this.fetchDocs(this.tokens);
+        else if (this.allDocs) await this.fetchDocs(among ?? this.tokens);
         return;
-      case "inherits":
+      case "inherits": {
         await this.probeHierarchy();
         await this.prepare(c.inner);
-        if (!this.inherited.has(c)) this.inherited.set(c, this.computeInherits(c.inner));
-        this.ready.set(c, await this.inherited.get(c)!);
+        // Asked per type name as needed: tokens the cheap parts let through may grow, e.g. once
+        // custom modifiers arrive. At most MAX_TYPES names per file.
+        let asked = this.inherited.get(c);
+        if (!asked) this.inherited.set(c, (asked = new Map()));
+        let yes = this.ready.get(c);
+        if (!yes) this.ready.set(c, (yes = new Set()));
+        const seen = new Set<string>();
+        const types = (among ?? this.tokens).filter((t) => t.chain.some((x) => TYPE_TOKENS.includes(x)) && !seen.has(t.text) && seen.add(t.text));
+        const todo = types.filter((t) => !asked!.has(t.text)).slice(0, Math.max(0, MAX_TYPES - asked.size));
+        const found = yes;
+        const run = inBatches(todo, async (t) => {
+          if (await this.inheritsAt(t, c.inner)) found.add(t.text);
+        });
+        for (const t of todo) asked.set(t.text, run);
+        await Promise.all(new Set(types.map((t) => asked!.get(t.text)).filter((p): p is Promise<void> => !!p)));
         return;
+      }
       case "contains":
       case "decorated": {
         await this.prepare(c.inner);
@@ -634,11 +669,17 @@ class DocData {
       case "within":
         return this.prepare(c.inner);
       case "not":
-        return this.prepareFolded(c.operand, scope);
-      case "and":
+        return this.prepareFolded(c.operand, scope, among);
+      case "and": {
+        const parts = conjuncts(c);
+        const cheap = parts.filter(isCheap);
+        const through = cheap.length ? (among ?? this.tokens).filter((t) => cheap.every((p) => this.testFolded(p, t))) : among;
+        for (const p of parts) if (!isCheap(p)) await this.prepareFolded(p, scope, through);
+        return;
+      }
       case "or":
-        await this.prepareFolded(c.left, scope);
-        await this.prepareFolded(c.right, scope);
+        await this.prepareFolded(c.left, scope, among);
+        await this.prepareFolded(c.right, scope, among);
     }
   }
 
@@ -730,24 +771,6 @@ class DocData {
         t.range.start.isBefore(name) && (s.range.contains(t.range) || (t.range.start.line >= first && t.range.start.line < s.range.start.line));
       if (this.tokens.some((t) => header(t) && this.test(c.inner, t))) names.add(this.nameOf(s));
     }
-    return names;
-  }
-
-  /**
-   * Names of types in this document with a base type (directly or further up) whose name token
-   * meets inner. Asked once per distinct type name, matched by text like contains().
-   */
-  private async computeInherits(inner: Condition): Promise<Set<string>> {
-    const names = new Set<string>();
-    const seen = new Set<string>();
-    const candidates = this.tokens.filter((t) => t.chain.some((c) => TYPE_TOKENS.includes(c)) && !seen.has(t.text) && seen.add(t.text));
-    await inBatches(candidates.slice(0, MAX_TYPES), async (t) => {
-      const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
-        (r) => r ?? [],
-        () => [],
-      );
-      if (await this.anyBase(items, inner)) names.add(t.text);
-    });
     return names;
   }
 
