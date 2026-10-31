@@ -67,10 +67,21 @@ export class Support implements vscode.Disposable {
   }
 }
 
-/** The languages an extension starts for (onLanguage:python). */
+/**
+ * The languages an extension starts for (onLanguage:python) or brings itself with code to serve
+ * them: rust-analyzer starts on workspaceContains:Cargo.toml and contributes the rust language.
+ * Grammar-only extensions (VS Code's own vscode.python) contribute languages too, but run nothing.
+ */
 function startsFor(e: vscode.Extension<unknown>): string[] {
-  const events: unknown = (e.packageJSON as { activationEvents?: unknown })?.activationEvents;
-  return Array.isArray(events) ? events.filter((a): a is string => typeof a === "string" && a.startsWith("onLanguage:")).map((a) => a.slice("onLanguage:".length)) : [];
+  const pkg = e.packageJSON as { activationEvents?: unknown; main?: unknown; browser?: unknown; contributes?: { languages?: unknown } } | undefined;
+  const events = Array.isArray(pkg?.activationEvents) ? pkg.activationEvents : [];
+  const runs = pkg?.main !== undefined || pkg?.browser !== undefined;
+  const contributed = runs && Array.isArray(pkg?.contributes?.languages) ? pkg.contributes.languages : [];
+  const ids = [
+    ...events.filter((a): a is string => typeof a === "string" && a.startsWith("onLanguage:")).map((a) => a.slice("onLanguage:".length)),
+    ...contributed.map((l: { id?: unknown }) => l?.id).filter((id): id is string => typeof id === "string"),
+  ];
+  return [...new Set(ids)];
 }
 
 /**

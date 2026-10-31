@@ -13,7 +13,7 @@ const cache = path.join(repo, ".vscode-test");
 // past 260 in all Windows can't start them ("file not found").
 const extensions = process.env.VSCODE_TEST_EXTENSIONS ?? path.join(os.tmpdir(), "stx-ext");
 
-const EXTENSIONS = ["ms-python.vscode-pylance", "ms-dotnettools.csdevkit", "ms-toolsai.jupyter"];
+const EXTENSIONS = ["ms-python.vscode-pylance", "ms-dotnettools.csdevkit", "ms-toolsai.jupyter", "rust-lang.rust-analyzer"];
 
 const SETTINGS = {
   // Project rules only apply in trusted workspaces; the test window can't be asked.

@@ -46,7 +46,7 @@ describe("Python, with Pylance", () => {
       assert.equal(await drawnColor(main, 14, "Keep"), "#AA0000");
       assert.equal(await drawnColor(main, 19, "Point"), undefined);
       // Pylance has a type hierarchy: no warning on the rule.
-      assert.deepEqual(unsupportedWarnings(), []);
+      assert.deepEqual(unsupportedWarnings("python"), []);
     });
 
     it("custom modifiers from project rules reach other files", async () => {

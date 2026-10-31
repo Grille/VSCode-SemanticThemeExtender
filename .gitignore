@@ -6,3 +6,5 @@ test/fixtures/projects/csharp/bin/
 test/fixtures/projects/csharp/obj/
 .vscode-test/
 test/fixtures/projects/python/bench_big.py
+test/fixtures/projects/rust/target/
+test/fixtures/projects/rust/Cargo.lock

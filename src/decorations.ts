@@ -756,7 +756,7 @@ class DocData {
    * Names of symbols with a decorator or attribute meeting c's condition: a token in the part of
    * the symbol before its name (Python @decorators, C# [Attributes], Java @annotations, where the
    * language server's symbol range includes them), or on the lines right above it that start
-   * with @ or [ (where it doesn't). Matched by text like contains(); cached under c itself, so it
+   * with @, [ or #[ (Rust; where it doesn't). Matched by text like contains(); cached under c itself, so it
    * is cleared along with contains() answers.
    */
   private decoratedBy(c: Condition & { inner: Condition }): Set<string> {
@@ -767,7 +767,7 @@ class DocData {
     for (const s of this.symbols) {
       if (!s.nameRange || names.has(this.nameOf(s))) continue;
       let first = s.range.start.line;
-      while (first > 0 && /^\s*[@[]/.test(this.doc.lineAt(first - 1).text)) first--;
+      while (first > 0 && /^\s*(?:[@[]|#\[)/.test(this.doc.lineAt(first - 1).text)) first--;
       const name = s.nameRange.start;
       const header = (t: Token) =>
         t.range.start.isBefore(name) && (s.range.contains(t.range) || (t.range.start.line >= first && t.range.start.line < s.range.start.line));
@@ -874,7 +874,8 @@ export class TokenDecorator implements vscode.Disposable {
     const data = await this.load(doc.uri);
     if (!data) return ["No semantic tokens for this file: the language server hasn't provided any (yet)."];
     await data.ensureImports();
-    const token = data.tokens.find((t) => t.range.contains(pos));
+    // At "base::|Shape" both touch the cursor; the one it's before wins, the one it's after if alone.
+    const token = data.tokens.find((t) => t.range.contains(pos) && !t.range.end.isEqual(pos)) ?? data.tokens.find((t) => t.range.contains(pos));
     if (!token) return ["No semantic token at the cursor."];
     const rules = this.rules.map((r, i) => ({ r, i })).filter(({ r }) => inFolder(r.folder, doc.uri));
     for (const { r } of rules) await data.prepare(r.when);

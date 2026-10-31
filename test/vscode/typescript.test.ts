@@ -31,7 +31,7 @@ describe("TypeScript, built in", () => {
     it("inherits(): a warning on the rule, since there's no type hierarchy", async () => {
       await setRules('inherits(text("Slotted")) class = #AA0000');
       await eventually(() =>
-        assert.deepEqual(unsupportedWarnings(), ["inherits() can't match in typescript: its language server provides no type hierarchy (seen in main.ts)"]),
+        assert.deepEqual(unsupportedWarnings("typescript"), ["inherits() can't match in typescript: its language server provides no type hierarchy (seen in main.ts)"]),
       );
     });
 

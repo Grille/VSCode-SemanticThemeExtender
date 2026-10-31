@@ -3,7 +3,7 @@ import { strict as assert } from "assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { conditionText, parseRulesFile } from "../src/cfg";
 import { TokenDecorator } from "../src/decorations";
-import { Missing, Support, unknownServers, unsupported } from "../src/support";
+import { languagesOfServer, Missing, serversFor, Support, unknownServers, unsupported } from "../src/support";
 import { compileRules, decorator, errors, eventually } from "./helpers";
 
 const NO_HIERARCHY: Missing = { language: "typescript", feature: "typeHierarchy", file: "main.ts" };
@@ -150,6 +150,19 @@ describe("server()", () => {
     await eventually(() => assert.deepEqual(Object.values(drawn(py)), [["0:A"]]));
     assert.equal(JSON.parse(Object.keys(drawn(py))[0]).color, "#AA0000");
     assert.deepEqual(drawn(ts), {});
+  });
+
+  it("counts the languages an extension brings itself, not only those it starts for", () => {
+    // rust-analyzer: starts on workspaceContains:Cargo.toml, contributes the rust language.
+    const all: unknown[] = require("vscode").extensions.all;
+    const packageJSON = { main: "./out/main", activationEvents: ["workspaceContains:Cargo.toml"], contributes: { languages: [{ id: "rust" }, { id: "ra_syntax_tree" }] } };
+    all.push({ id: "rust-lang.rust-analyzer", isActive: true, packageJSON });
+    try {
+      assert.deepEqual(languagesOfServer("rust-lang.rust-analyzer"), ["rust", "ra_syntax_tree"]);
+      assert.deepEqual(serversFor("rust"), ["rust-lang.rust-analyzer"]);
+    } finally {
+      all.pop();
+    }
   });
 
   it("a hint where the extension isn't installed", () => {

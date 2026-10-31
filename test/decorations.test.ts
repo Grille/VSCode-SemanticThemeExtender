@@ -193,6 +193,27 @@ describe("symbol conditions", () => {
       assert.deepEqual(colors(doc), { "#AA0000": ["1:Point", "6:Point"], "#00AA00": ["3:make"] }, `range includes decorators: ${includes}`);
     }
   });
+
+  it("decorated: Rust #[attributes] above a symbol that leaves them out", async () => {
+    const doc = addFile("file:///d.rs", {
+      language: "rust",
+      lines: ["#[derive(Debug)]", "struct Point;", "struct Plain;"],
+      tokens: [
+        { line: 0, text: "derive", type: "decorator" },
+        { line: 0, text: "Debug", type: "decorator" },
+        { line: 1, text: "Point", type: "struct", modifiers: ["declaration"] },
+        { line: 2, text: "Plain", type: "struct", modifiers: ["declaration"] },
+      ],
+      symbols: [
+        { name: "Point", kind: K.Struct, from: 1, to: 1, nameLine: 1 },
+        { name: "Plain", kind: K.Struct, from: 2, to: 2, nameLine: 2 },
+      ],
+    });
+    show(doc);
+    d = decorator(['decorated(text("derive")) struct = #AA0000']);
+    await settle(80);
+    assert.deepEqual(colors(doc), { "#AA0000": ["1:Point"] });
+  });
 });
 
 describe("what real servers do differently", () => {
@@ -253,6 +274,27 @@ describe("custom modifiers", () => {
       '  drawn: class.slotted = "#AA0000"  (global rules, line 1)',
       '  also matches: text("Slotted") class = "#0000AA"  (global rules, line 2)',
     ]);
+  });
+});
+
+describe("Inspect Token", () => {
+  it("between two touching tokens, takes the one the cursor is before", async () => {
+    reset();
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const doc = addFile("file:///proj/a.rs", {
+      language: "rust",
+      lines: ["use baseShape;"],
+      tokens: [
+        { line: 0, text: "base", type: "variable" },
+        { line: 0, text: "Shape", type: "interface" },
+      ],
+    });
+    show(doc);
+    d = decorator([]);
+    const at = async (ch: number) => (await d!.inspect(doc as any, new Position(0, ch) as any))[0];
+    assert.equal(await at(4), "'base'  variable, rust");
+    assert.equal(await at(8), "'Shape'  interface, rust");
+    assert.equal(await at(13), "'Shape'  interface, rust", "right after the last one");
   });
 });
 

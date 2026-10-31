@@ -69,8 +69,8 @@ override ui {
 | `text("__slots__") variable.classMember`, `text("__*__", "_*") *` | Only tokens with one of these texts (`*` wildcards) |
 | `contains(text("__slots__") variable.classMember) class` | Only tokens naming a symbol (class, function, …) that directly contains a match: classes that define `__slots__`, at their declaration and wherever they're used, also in other workspace files (the use is looked up with go to definition, a moment after the rest is drawn). Uses the language server's document symbols. The inside is a selector expression too: `contains(text("__enter__") method \| text("__aenter__") method)` |
 | `within(class text("Ctx")) method` | Only tokens inside a symbol whose name token matches: here methods of a class named `Ctx`. Same file, from document symbols |
-| `decorated(text("dataclass")) class` | Only tokens naming a symbol with a matching decorator or attribute: Python `@dataclass`, C# `[Serializable]`, Java annotations, TS decorators. Counts the tokens before the symbol's name, in its range or on the lines right above starting with `@` or `[`. At the declaration and wherever it's used, also in other files, like `contains`. C# attribute names are `class` tokens and may be written with or without `Attribute`: `decorated(text("Obsolete", "ObsoleteAttribute"))`. C# reports `[Obsolete]` members as `namespace.deprecated`, not `method`, so leave the type out there or use `*.deprecated` |
-| `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance and C# provide it, TypeScript doesn't), so it appears a little later |
+| `decorated(text("dataclass")) class` | Only tokens naming a symbol with a matching decorator or attribute: Python `@dataclass`, C# `[Serializable]`, Rust `#[derive(Debug)]`, Java annotations, TS decorators. Counts the tokens before the symbol's name, in its range or on the lines right above starting with `@`, `[` or `#[`. At the declaration and wherever it's used, also in other files, like `contains`. C# attribute names are `class` tokens and may be written with or without `Attribute`: `decorated(text("Obsolete", "ObsoleteAttribute"))`. C# reports `[Obsolete]` members as `namespace.deprecated`, not `method`, so leave the type out there or use `*.deprecated` |
+| `inherits(contains(text("__slots__") variable.classMember)) class` | Only tokens naming a type with a base type, directly or further up, whose name token matches: here subclasses of classes that define `__slots__`, also when the base lives in another file or a library. Uses the language server's type hierarchy (Pylance and C# provide it, TypeScript and rust-analyzer don't), so it appears a little later |
 | `@slots => contains(text("__slots__") variable.classMember)` | A named selector expression, used as `@slots` in any head: `@slots class = …`, `inherits(@slots) class`, `@slots & !contains(…) class`, or alone: `@slots = …`. Top level only, assigned once, usable before its declaration |
 | `contains(…) class += slotted` | Custom modifiers: tokens the head matches get `slotted`, as if the language server had reported it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in another rules file. Assignments run in order, global rules first, then the project's. A name used in one file and defined in another workspace file gets the custom modifiers of its definition (asked of the language server's go to definition), a moment after the rest is drawn. Modifiers no language server defines count as custom ones, except as plain names after `string`, `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write `*.foo`, `semantic variable.foo`, or use it in an expression. Rules with custom modifiers are drawn as decorations; one that nothing in the same file assigns gets a hint, in case it's a typo |
 | `doc("*deprecated*") function` | Only tokens whose documentation matches: the prose of their hover (Python docstrings, C# `///` summaries, JSDoc), without code blocks, so not the signature. `*` wildcards, any case, several patterns mean any. Works for names defined anywhere, libraries included. Hovers are asked for once per name, a moment after the rest is drawn |
@@ -173,7 +173,10 @@ VS Code's defaults for 4 to 6 are transparent, which means "not used": brackets 
 through the first three levels unless you set more.
 
 Semantic colors need a language extension that provides semantic tokens, such as
-C# Dev Kit, Pylance, or the built-in TypeScript support.
+C# Dev Kit, Pylance, rust-analyzer, or the built-in TypeScript support.
+
+rust-analyzer sometimes has no symbols for a file opened while it starts, until the file's
+first edit; `contains`, `decorated` and `within` match nothing there until then.
 
 ## Development
 
@@ -209,12 +212,14 @@ format), so a server update that changes an assumption fails there.
 npm run test:vscode
 ```
 
-runs [test/vscode/](test/vscode/) inside a real VS Code, with Pylance, the C# extension and the
-built-in TypeScript support, on the same projects: what you'd see with Inspect Token. It opens a
+runs [test/vscode/](test/vscode/) inside a real VS Code, with Pylance (also in a Jupyter
+notebook), the C# extension, rust-analyzer and the built-in TypeScript support, on the same
+projects: what you'd see with Inspect Token. It opens a
 VS Code window for a few minutes. The first run downloads VS Code into `.vscode-test/` and the
 extensions into a short folder in your temp directory (`VSCODE_TEST_EXTENSIONS` to change it;
-C# Dev Kit's paths are too long for Windows otherwise). `npm run test:vscode -- csharp` runs one
-file.
+C# Dev Kit's paths are too long for Windows otherwise). The Rust suite needs a Rust toolchain
+([rustup](https://rustup.rs)) and is skipped without one. `npm run test:vscode -- csharp` runs
+one file.
 
 The list of UI color IDs and their defaults ([src/uiColors.ts](src/uiColors.ts)) is
 generated from VS Code's own code, since VS Code has no API for it:

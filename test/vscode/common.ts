@@ -85,5 +85,9 @@ export async function eventually<T>(check: () => Promise<T> | T, timeoutMs = 90_
   }
 }
 
-/** The global rules' warnings about conditions a language can't support. */
-export const unsupportedWarnings = () => vscode.languages.getDiagnostics(RULES).map((d) => d.message).filter((m) => m.includes("can't match"));
+/** The global rules' warnings about conditions a language (any, or this one) can't support. */
+export const unsupportedWarnings = (language?: string) =>
+  vscode.languages
+    .getDiagnostics(RULES)
+    .map((d) => d.message)
+    .filter((m) => m.includes(language ? `can't match in ${language}:` : "can't match"));

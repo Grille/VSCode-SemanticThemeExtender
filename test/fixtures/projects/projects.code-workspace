@@ -1,4 +1,4 @@
 {
-  "folders": [{ "path": "python" }, { "path": "typescript" }, { "path": "csharp" }],
+  "folders": [{ "path": "python" }, { "path": "typescript" }, { "path": "csharp" }, { "path": "rust" }],
   "settings": {}
 }
