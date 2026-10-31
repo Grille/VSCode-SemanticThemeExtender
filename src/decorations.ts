@@ -52,6 +52,9 @@ type Condition =
   /** What language() and server() fold to in a given document. */
   | { kind: "const"; value: boolean };
 
+/** Switches for measuring: test/servers/benchmark.ts compares with folding off. */
+export const tuning = { fold: true };
+
 const TRUE: Condition = { kind: "const", value: true };
 const FALSE: Condition = { kind: "const", value: false };
 
@@ -62,6 +65,7 @@ const FALSE: Condition = { kind: "const", value: false };
  * so answers cached by condition are shared.
  */
 function fold(c: Condition, language: string, servers: string[]): Condition {
+  if (!tuning.fold) return c;
   switch (c.kind) {
     case "language":
       return c.ids.includes(language) ? TRUE : FALSE;

@@ -41,6 +41,7 @@
     "test": "tsc -p tsconfig.test.json && node --test --test-reporter=spec \"out-test/test/*.test.js\"",
     "test:servers": "tsc -p tsconfig.test.json && node --test --test-reporter=spec --test-concurrency=1 \"out-test/test/servers/*.test.js\"",
     "test:vscode": "npm run compile && tsc -p tsconfig.test.json && node out-test/test/vscode/run.js",
+    "bench": "tsc -p tsconfig.test.json && node out-test/test/servers/benchmark.js",
     "vscode:prepublish": "npm run compile"
   },
   "capabilities": {

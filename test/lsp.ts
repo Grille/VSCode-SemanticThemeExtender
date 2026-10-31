@@ -33,6 +33,8 @@ export class LspClient {
   private constructor(private readonly proc: ChildProcess, readonly name: string) {
     proc.stdout!.on("data", (chunk: Buffer) => this.receive(chunk));
     proc.stderr!.on("data", () => undefined);
+    // Writes racing the server's exit fail with EPIPE; send() skips those it can see coming.
+    proc.stdin!.on("error", () => undefined);
     proc.on("exit", (code) => {
       for (const p of this.pending.values()) p.reject(new Error(`${name} exited (${code}) during ${p.method}`));
       this.pending.clear();
@@ -71,6 +73,8 @@ export class LspClient {
   }
 
   private send(message: unknown) {
+    // Work still under way when the server stops (a decorator's second pass) has nobody to talk to.
+    if (!this.proc.stdin || this.proc.stdin.destroyed || this.proc.exitCode !== null) return;
     const body = Buffer.from(JSON.stringify(message), "utf8");
     this.proc.stdin!.write(`Content-Length: ${body.length}\r\n\r\n`);
     this.proc.stdin!.write(body);

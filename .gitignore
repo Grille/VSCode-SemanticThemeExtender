@@ -5,3 +5,4 @@ out-test/
 test/fixtures/projects/csharp/bin/
 test/fixtures/projects/csharp/obj/
 .vscode-test/
+test/fixtures/projects/python/bench_big.py
