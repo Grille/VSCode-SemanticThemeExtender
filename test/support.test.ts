@@ -1,4 +1,4 @@
-import { addFile, drawn, Position, reset, show, SymbolKind as K, Uri, world } from "./fake-vscode";
+import { addFile, drawn, editLine, Position, reset, show, SymbolKind as K, Uri, world } from "./fake-vscode";
 import { strict as assert } from "assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { conditionText, parseRulesFile } from "../src/cfg";
@@ -228,5 +228,23 @@ describe("asking only about tokens the rest of a rule lets through", () => {
     await new Promise((r) => setTimeout(r, 200));
     // Hovers: Base and Child, not x, y, f, a. Type hierarchy: the probe at Base, then Child only.
     assert.deepEqual([world.requests.hover, world.requests.typeHierarchy <= 3], [2, true]);
+  });
+});
+
+describe("notebook cells", () => {
+  let d: TokenDecorator | undefined;
+  beforeEach(() => reset());
+  afterEach(() => d?.dispose());
+
+  it("are redrawn on edits, like files", async () => {
+    const spec = { lines: ["old = 1"], tokens: [{ line: 0, text: "old", type: "variable", modifiers: ["declaration"] }] };
+    const cell = addFile("vscode-notebook-cell:/proj/nb.ipynb#W0sZmlsZQ%3D%3D", spec);
+    show(cell);
+    d = decorator(['text("renamed") variable = #00AA00']);
+    await new Promise((r) => setTimeout(r, 100));
+    assert.deepEqual(drawn(cell), {});
+    spec.tokens[0].text = "renamed";
+    editLine(cell, 0, "renamed = 1");
+    await eventually(() => assert.deepEqual(Object.values(drawn(cell)), [["0:renamed"]]));
   });
 });

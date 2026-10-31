@@ -121,6 +121,8 @@ interface CompiledMessage {
 }
 
 const DIAGNOSTIC_SOURCE = "Semantic Theme Extender";
+/** Documents with code: files, unsaved files and notebook cells; not output panels and the like. */
+const CODE_SCHEMES = ["file", "untitled", "vscode-notebook-cell"];
 const IGNORE = /semantic-theme:\s*ignore\b(.*)/;
 
 /**
@@ -825,14 +827,14 @@ export class TokenDecorator implements vscode.Disposable {
       vscode.window.onDidChangeVisibleTextEditors((editors) => editors.forEach((e) => this.schedule(e.document, 0, 0))),
       vscode.workspace.onDidChangeTextDocument((e) => {
         // Output panels and the like change all the time; only edits to code matter.
-        if (!e.contentChanges.length || (e.document.uri.scheme !== "file" && e.document.uri.scheme !== "untitled")) return;
+        if (!e.contentChanges.length || !CODE_SCHEMES.includes(e.document.uri.scheme)) return;
         // A base type may have changed: other documents' inherits() answers may be stale too.
         if (this.needsSymbols()) this.cache.clear();
         else this.cache.delete(e.document.uri.toString());
         this.schedule(e.document);
       }),
       vscode.workspace.onDidCloseTextDocument((doc) => this.diagnostics.delete(doc.uri)),
-      vscode.languages.registerCodeActionsProvider([{ scheme: "file" }, { scheme: "untitled" }], new IgnoreFix(), {
+      vscode.languages.registerCodeActionsProvider(CODE_SCHEMES.map((scheme) => ({ scheme })), new IgnoreFix(), {
         providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
       }),
     ];

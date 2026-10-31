@@ -130,6 +130,15 @@ export const world = {
 const lacks = (uri: Uri, feature: "typeHierarchy" | "symbols" | "hovers") =>
   !!world.lacking.get(world.files.get(uri.toString())?.language ?? "python")?.has(feature);
 
+const changeListeners: ((e: any) => void)[] = [];
+
+/** An edit to the document, as VS Code reports it: new text for a line, a new version. */
+export function editLine(doc: FakeDoc, line: number, text: string) {
+  doc.lines[line] = text;
+  doc.version++;
+  changeListeners.forEach((l) => l({ document: doc, contentChanges: [{ text }] }));
+}
+
 export function reset() {
   world.files.clear();
   world.docs.clear();
@@ -429,7 +438,7 @@ const vscode = {
     createFileSystemWatcher: () => ({ onDidChange: event, onDidCreate: event, onDidDelete: event, dispose() {} }),
     registerFileSystemProvider: () => disposable,
     onDidChangeConfiguration: event,
-    onDidChangeTextDocument: event,
+    onDidChangeTextDocument: (l: (e: any) => void) => (changeListeners.push(l), { dispose: () => changeListeners.splice(changeListeners.indexOf(l), 1) }),
     onDidOpenTextDocument: event,
     onDidCloseTextDocument: event,
     onDidChangeWorkspaceFolders: event,
