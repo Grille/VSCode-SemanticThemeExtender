@@ -48,7 +48,43 @@ type Condition =
   | { kind: "selector"; matcher: Matcher }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Condition }
   | { kind: "not"; operand: Condition }
-  | { kind: "and" | "or"; left: Condition; right: Condition };
+  | { kind: "and" | "or"; left: Condition; right: Condition }
+  /** What language() and server() fold to in a given document. */
+  | { kind: "const"; value: boolean };
+
+const TRUE: Condition = { kind: "const", value: true };
+const FALSE: Condition = { kind: "const", value: false };
+
+/**
+ * c with what's fixed for a document decided: its language and its servers. In a Python file
+ * language(csharp) & inherits(...) is false and never prepared (no type hierarchy requests), and
+ * language(python) & text("foo") is text("foo"). Parts that don't change stay the same objects,
+ * so answers cached by condition are shared.
+ */
+function fold(c: Condition, language: string, servers: string[]): Condition {
+  switch (c.kind) {
+    case "language":
+      return c.ids.includes(language) ? TRUE : FALSE;
+    case "server":
+      return c.ids.some((id) => servers.includes(id)) ? TRUE : FALSE;
+    case "not": {
+      const o = fold(c.operand, language, servers);
+      if (o.kind === "const") return o.value ? FALSE : TRUE;
+      return o === c.operand ? c : { kind: "not", operand: o };
+    }
+    case "and":
+    case "or": {
+      const l = fold(c.left, language, servers);
+      const r = fold(c.right, language, servers);
+      const and = c.kind === "and";
+      // true & x is x, false & x is false; false | x is x, true | x is true.
+      for (const [x, y] of [[l, r], [r, l]]) if (x.kind === "const") return x.value === and ? y : x;
+      return l === c.left && r === c.right ? c : { kind: c.kind, left: l, right: r };
+    }
+    default:
+      return c;
+  }
+}
 
 /**
  * A rule to draw; one with a folder (a URI string) only applies to documents inside it. file names
@@ -322,8 +358,8 @@ const CROSS_WAIT_MS = 2000;
 type Log = (line: string) => void;
 
 /** Every kind of atom in c. */
-function kindsOf(c: Condition, out: Set<Condition["kind"]>) {
-  out.add(c.kind);
+function kindsOf(c: Condition, out: Set<Exclude<Condition["kind"], "const">>) {
+  if (c.kind !== "const") out.add(c.kind);
   if ("inner" in c) kindsOf(c.inner, out);
   else if (c.kind === "not") kindsOf(c.operand, out);
   else if (c.kind === "and" || c.kind === "or") {
@@ -368,6 +404,7 @@ class DocData {
   /** Where symbols' names start ("line:char"): those tokens declare something. */
   private declared = new Set<string>();
   private probedHierarchy = false;
+  private folded = new Map<Condition, Condition>();
 
   constructor(
     readonly doc: vscode.TextDocument,
@@ -560,6 +597,17 @@ class DocData {
    * on screen and past its first pass, for every name.
    */
   async prepare(c: Condition, scope?: Token[]): Promise<void> {
+    return this.prepareFolded(this.simplified(c), scope);
+  }
+
+  /** c as it is in this document: see fold(). */
+  simplified(c: Condition): Condition {
+    let s = this.folded.get(c);
+    if (!s) this.folded.set(c, (s = fold(c, this.doc.languageId, this.servers)));
+    return s;
+  }
+
+  private async prepareFolded(c: Condition, scope?: Token[]): Promise<void> {
     switch (c.kind) {
       case "doc":
       case "signature":
@@ -582,16 +630,22 @@ class DocData {
       case "within":
         return this.prepare(c.inner);
       case "not":
-        return this.prepare(c.operand, scope);
+        return this.prepareFolded(c.operand, scope);
       case "and":
       case "or":
-        await this.prepare(c.left, scope);
-        await this.prepare(c.right, scope);
+        await this.prepareFolded(c.left, scope);
+        await this.prepareFolded(c.right, scope);
     }
   }
 
   test(c: Condition, t: Token): boolean {
+    return this.testFolded(this.simplified(c), t);
+  }
+
+  private testFolded(c: Condition, t: Token): boolean {
     switch (c.kind) {
+      case "const":
+        return c.value;
       case "language":
         return c.ids.includes(this.doc.languageId);
       case "server":
@@ -617,11 +671,11 @@ class DocData {
       case "inherits":
         return this.ready.get(c)?.has(t.text) ?? false;
       case "not":
-        return !this.test(c.operand, t);
+        return !this.testFolded(c.operand, t);
       case "and":
-        return this.test(c.left, t) && this.test(c.right, t);
+        return this.testFolded(c.left, t) && this.testFolded(c.right, t);
       case "or":
-        return this.test(c.left, t) || this.test(c.right, t);
+        return this.testFolded(c.left, t) || this.testFolded(c.right, t);
     }
   }
 
@@ -818,8 +872,8 @@ export class TokenDecorator implements vscode.Disposable {
       const silenced = ignored(doc, token.range.start.line, m.code) ? " [ignored here]" : "";
       lines.push(`  message${m.code ? ` ${m.code}` : ""}: ${messageFor(m, token)}  (${m.source})${silenced}`);
     }
-    const kinds = new Set<Condition["kind"]>();
-    for (const r of [...rules.map(({ r }) => r), ...this.tags, ...this.messages]) if (inFolder(r.folder, doc.uri)) kindsOf(r.when, kinds);
+    const kinds = new Set<Exclude<Condition["kind"], "const">>();
+    for (const r of [...rules.map(({ r }) => r), ...this.tags, ...this.messages]) if (inFolder(r.folder, doc.uri)) kindsOf(data.simplified(r.when), kinds);
     for (const kind of kinds) {
       const feature = featureOf(kind);
       if (feature && this.support.lacks(doc.languageId, feature)) lines.push(`  ${unsupportedText(kind, doc.languageId)}`);
@@ -921,17 +975,21 @@ export class TokenDecorator implements vscode.Disposable {
     const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", doc.uri);
     if (!legend || !tokens) return undefined;
     const decoded = this.decode(doc, legend, tokens.data);
-    const symbols = this.needsSymbols() ? await this.symbols(doc) : [];
+    const servers = serversFor(doc.languageId);
+    // What this document's language and servers leave of the rules decides what's worth asking for.
+    // Not limited to its folder: it may be another folder's base type file.
+    const here = [...this.rules, ...this.tags, ...this.messages].map((r) => fold(r.when, doc.languageId, servers));
+    const wantsSymbols = here.some(needsSymbols);
+    const symbols = wantsSymbols ? await this.symbols(doc) : [];
     // Any server with symbols has some for a file that declares something.
-    if (this.needsSymbols() && (symbols.length || decoded.some((t) => t.modifiers.includes("declaration")))) {
+    if (wantsSymbols && (symbols.length || decoded.some((t) => t.modifiers.includes("declaration")))) {
       this.support.report(doc.languageId, "symbols", symbols.length > 0, fileName(doc.uri));
     }
     const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
     const custom = new Set(this.tags.flatMap((t) => t.modifiers));
-    const all = [...this.rules, ...this.tags, ...this.messages];
-    const follow = all.some((r) => usesContains(r.when));
-    const docs = all.some((r) => usesDoc(r.when));
-    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support, serversFor(doc.languageId));
+    const follow = here.some(usesContains);
+    const docs = here.some(usesDoc);
+    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support, servers);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */

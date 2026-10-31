@@ -165,3 +165,36 @@ describe("server()", () => {
     assert.equal(unsupported(file, [NO_HIERARCHY]).length, 1, "an extension that isn't installed says nothing about languages");
   });
 });
+
+describe("conditions decided per document", () => {
+  let d: TokenDecorator | undefined;
+  beforeEach(() => reset());
+  afterEach(() => d?.dispose());
+
+  it("rules for another language ask the language server nothing", async () => {
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const py = addFile("file:///proj/a.py", {
+      lines: ["class Base: pass", "class Child(Base): pass"],
+      tokens: [
+        { line: 0, text: "Base", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "Child", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "Base", type: "class" },
+      ],
+      hovers: { Base: "The base." },
+    });
+    world.declared.set("Base", { uri: "file:///proj/a.py", line: 0 });
+    world.bases.set("Child", ["Base"]);
+    show(py);
+    d = decorator([
+      'language(csharp) & inherits(text("Base")) class = #AA0000',
+      'language(csharp) { doc("*base*") class = #AA0000 }',
+      'server(someone.else) & !inherits(text("Base")) = #AA0000',
+      'language(python) & text("Child") = #00AA00',
+      'language(python) | doc("*nothing*") = #0000AA',
+    ]);
+    await eventually(() => assert.deepEqual(Object.values(drawn(py)).sort(), [["0:Base", "1:Base"], ["1:Child"]]));
+    // The second pass (definitions, hovers) has run too by now.
+    await new Promise((r) => setTimeout(r, 200));
+    assert.deepEqual([world.requests.typeHierarchy, world.requests.hover], [0, 0]);
+  });
+});
