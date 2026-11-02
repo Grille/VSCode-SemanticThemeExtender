@@ -3,10 +3,12 @@
 @contains_slots => contains(text("__slots__") variable.classMember)
 
 language(python) {
-  @contains_slots class += slotted
-  ; Subclasses of a slotted class that don't declare __slots__ themselves get a __dict__ again.
-  inherits(class.slotted) & !class.slotted += leaky
-  class.leaky & class.declaration := warn(leaky-slots, "{text} gets a __dict__ again: its base class uses __slots__, it doesn't")
+  @contains_slots & class += slotted
+  text("tuple") & class.builtin += tuple
+  class.slotted | class.tuple += struct
+  ; Subclasses of a slotted class or a tuple that don't declare __slots__ themselves get a __dict__ again.
+  inherits(class.struct) & !class.slotted += leaky
+  class.leaky & class.declaration := warn(leaky-slots, "{text} gets a __dict__ again: its base class has none, and it doesn't declare __slots__")
 }
 
 ; How they look belongs in the global rules, e.g. class.slotted = style($struct, bold).

@@ -75,6 +75,23 @@ describe("Python, with Pylance", () => {
       await setProjectRules("python");
     });
 
+    it("project rules reach library files: the builtin tuple as a struct", async () => {
+      // As examples/.vscode/semantic-theme.str: inherits() looks at tuple in builtins.pyi.
+      await setProjectRules(
+        "python",
+        'text("tuple") & class.builtin += tuple',
+        `contains(text("__slots__") variable.classMember) class += slotted`,
+        "class.slotted | class.tuple += struct",
+        "inherits(class.struct) & !class.slotted += leaky",
+      );
+      await setRules("class.leaky = #AA5500");
+      // builtins.pyi is only tagged where asked: all of it took 30 s.
+      await eventually(async () => assert.equal(await drawnColor(main, 35, "Pair"), "#AA5500"));
+      assert.equal(await drawnColor(main, 6, "Child"), "#AA5500");
+      assert.equal(await drawnColor(main, 14, "Keep"), undefined);
+      await setProjectRules("python");
+    });
+
     it("decorated(): @dataclass", async () => {
       await setRules('decorated(text("dataclass")) class = #0000AA');
       await eventually(async () => assert.equal(await drawnColor(main, 19, "Point"), "#0000AA"));

@@ -12,6 +12,17 @@ class Color(Enum):
     GREEN = 2
 
 
+class TupleLost(tuple):
+    def __new__(cls, iterable):
+        return super().__new__(cls, iterable)
+
+
+class TupleKeept(tuple):
+    __slots__ = ()
+    def __new__(cls, iterable):
+        return super().__new__(cls, iterable)
+
+
 class Point(NamedTuple):
     x: float
     y: float
@@ -33,7 +44,6 @@ class Shape(Protocol):
     def area(self) -> float: ...
 
 
-
 class SlottedLost(Slotted):
     def __init__(self) -> None:
         super().__init__(0, 0)
@@ -45,7 +55,6 @@ class SlottedKeept(Slotted):
         super().__init__(0, 0)
 
 
-
 @dataclass
 class Box(Generic[T]):
     """A box holding one value."""
@@ -53,6 +62,7 @@ class Box(Generic[T]):
     value: T
 
     def get(self) -> T:
+        b: tuple
         return self.value
 
 

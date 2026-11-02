@@ -404,3 +404,18 @@ The project file applies on save, after the global rules, to files in that folde
 trusted workspaces. Color rules there still work, with a warning: they are drawn as decorations
 (settings are shared by all windows), so semantic selectors only, and they can't use the global
 rules' variables.
+
+Its custom modifiers also reach library files the project's files lead to, outside the
+workspace, so a project can say what a library's types are:
+
+```ini
+language(python) {
+  text("tuple") & class.builtin += tuple
+  class.slotted | class.tuple += struct
+  inherits(class.struct) & !class.slotted += leaky
+}
+```
+
+`inherits` looks at `tuple` where `builtins.pyi` declares it, which is a struct here too. In a
+library file only the names asked about get custom modifiers: a `contains` or `within` there
+sees the file without them.

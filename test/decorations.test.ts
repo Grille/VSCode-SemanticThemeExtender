@@ -291,6 +291,48 @@ describe("custom modifiers", () => {
       '  also matches: text("Slotted") class = "#0000AA"  (global rules, line 2)',
     ]);
   });
+
+  it("project rules reach library files, e.g. a builtin base type", async () => {
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const lib = addFile("file:///lib/builtins.pyi", {
+      lines: ["class tuple: ..."],
+      tokens: [{ line: 0, text: "tuple", type: "class", modifiers: ["declaration", "builtin"] }],
+      symbols: [{ name: "tuple", kind: K.Class, from: 0, to: 0, nameLine: 0 }],
+    });
+    const main = addFile("file:///proj/main.py", {
+      lines: ["class Lost(tuple): pass", "class Kept(tuple):", "    __slots__ = ()"],
+      tokens: [
+        { line: 0, text: "Lost", type: "class", modifiers: ["declaration"] },
+        { line: 0, text: "tuple", type: "class", modifiers: ["builtin"] },
+        { line: 1, text: "Kept", type: "class", modifiers: ["declaration"] },
+        { line: 1, text: "tuple", type: "class", modifiers: ["builtin"] },
+        { line: 2, text: "__slots__", type: "variable", modifiers: ["declaration", "classMember"] },
+      ],
+      symbols: [
+        { name: "Lost", kind: K.Class, from: 0, to: 0, nameLine: 0 },
+        { name: "Kept", kind: K.Class, from: 1, to: 2, nameLine: 1, children: [{ name: "__slots__", kind: K.Variable, from: 2, to: 2, nameLine: 2 }] },
+      ],
+    });
+    world.declared.set("tuple", { uri: lib.uri.toString(), line: 0 });
+    world.declared.set("Lost", { uri: main.uri.toString(), line: 0 });
+    world.declared.set("Kept", { uri: main.uri.toString(), line: 1 });
+    world.bases.set("Lost", ["tuple"]);
+    world.bases.set("Kept", ["tuple"]);
+    show(main);
+    d = decorator([], {
+      folder: "file:///proj",
+      rules: [
+        'text("tuple") & class.builtin += tuple',
+        `${SLOTS} class += slotted`,
+        "class.slotted | class.tuple += struct",
+        "inherits(class.struct) & !class.slotted += leaky",
+        'class.leaky & class.declaration := warn(leaky, "{text}")',
+      ],
+    });
+    await settle(120);
+    // builtins.pyi is outside the workspace: its tuple only became a struct through these rules.
+    assert.deepEqual(messages(main), ["0:Lost"]);
+  });
 });
 
 describe("Inspect Token", () => {

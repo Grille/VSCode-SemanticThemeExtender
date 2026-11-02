@@ -3,7 +3,8 @@
 // semantic tokens. VS Code uses a single semantic token provider per document, so instead of
 // providing tokens this reads the existing ones, plus document symbols and the type hierarchy
 // where a rule needs them, and draws editor decorations over matches. Rules from a project's rules
-// file only apply to documents inside that workspace folder.
+// file only apply to documents inside that workspace folder, and to library files they reach
+// (a base type in builtins.pyi).
 //
 // Custom modifiers (head += slotted) are given to a document's tokens first, rule by rule in file
 // order (global rules, then the project's), so later heads and every drawn rule can select them.
@@ -415,6 +416,8 @@ class DocData {
   private origins = new Map<Token, Map<string, string>>();
   private tagging?: Promise<void>;
   private taggingNow = false;
+  /** In a library file: the tokens given their custom modifiers so far, or on the way. */
+  private tokenTagging = new Map<Token, Promise<void>>();
   private importing?: Promise<void>;
   /** Names used here and defined in another workspace file: their definitions' name tokens. */
   private definitions = new Map<string, { data: DocData; token: Token }[]>();
@@ -450,6 +453,8 @@ class DocData {
     private readonly support: Support,
     /** The extensions that may be this document's language server, lowercase. */
     readonly servers: string[],
+    /** Loaded for another document, from outside the workspace: see ensureTagsOn(). */
+    private readonly library = false,
   ) {
     for (const s of symbols) {
       this.names.set(s, s.nameRange && this.tokenAt(s.nameRange));
@@ -487,7 +492,7 @@ class DocData {
    * that chain in turn waits for this one.
    */
   ensureTags(): Promise<void> {
-    if (taggingChain.getStore()?.has(this)) return Promise.resolve();
+    if (this.library || taggingChain.getStore()?.has(this)) return Promise.resolve();
     const elsewhere = this.taggingNow;
     if (!this.tagging) {
       const chain = new Set(taggingChain.getStore()).add(this);
@@ -512,11 +517,35 @@ class DocData {
   }
 
   /**
+   * Gives these tokens their custom modifiers. In a library file only these, when first asked about:
+   * such files are large (builtins.pyi), and only a base type's name in them matters. Its
+   * contains() and within() still look at the whole file, without the custom modifiers of the rest.
+   */
+  async ensureTagsOn(tokens: Token[]): Promise<void> {
+    if (!this.library) return this.ensureTags();
+    const todo = tokens.filter((t) => !this.tokenTagging.has(t));
+    if (todo.length) {
+      const run = this.tagOnly(todo);
+      for (const t of todo) this.tokenTagging.set(t, run);
+    }
+    await Promise.all(tokens.map((t) => this.tokenTagging.get(t)));
+  }
+
+  private async tagOnly(tokens: Token[]) {
+    for (const tag of this.tags) {
+      // inherits(), doc() and from() ask the language server about these tokens alone.
+      await this.prepareFolded(this.simplified(tag.when), tokens, tokens);
+      for (const t of tokens) if (this.test(tag.when, t)) this.give(t, tag.modifiers, tag.source);
+      this.owners.clear();
+    }
+  }
+
+  /**
    * For a document on screen: tokens whose definition is in another workspace file take over the
    * custom modifiers the definition got there (Slotted in class Child(Slotted), from base.py), matched
    * by text like contains(), and contains() asks the definition's file about them. Then this
    * document's own assignments run again, to build on both.
-   * Library files are left out; only the workspace's own files get project modifiers anyway.
+   * Library files are left out: a document uses many library names, and their files are large.
    * Types are also looked up in the type hierarchy: go to definition on Slotted() may answer with
    * __init__, the hierarchy always with the class.
    */
@@ -850,6 +879,7 @@ class DocData {
           const data = await this.load(base.uri);
           const name = data?.tokenAt(base.selectionRange);
           if (data && name) {
+            await data.ensureTagsOn([name]);
             await data.prepare(inner, [name]);
             if (data.test(inner, name)) return true;
           }
@@ -1039,17 +1069,24 @@ export class TokenDecorator implements vscode.Disposable {
     return [...this.rules, ...this.tags, ...this.messages].some((r) => needsSymbols(r.when));
   }
 
-  /** Tokens (with custom modifiers) and symbols of a document, also one that isn't open (a base type's file). */
-  private load: Loader = async (uri) => {
-    const key = uri.toString();
+  /**
+   * Tokens (with custom modifiers) and symbols of a document, also one that isn't open (a base type's
+   * file). A file outside the workspace, a library's, gets the project rules of the document it's
+   * loaded for: builtins.pyi's tuple is a struct in a project that says so. projects names their
+   * folders, so it's analyzed once for each.
+   */
+  private load = async (uri: vscode.Uri, projects?: string): Promise<DocData | undefined> => {
     const doc = await vscode.workspace.openTextDocument(uri).then(
       (d) => d,
       () => undefined,
     );
     if (!doc) return undefined;
+    const own = projects === undefined || !!vscode.workspace.getWorkspaceFolder(uri);
+    if (own) projects = this.projectsOf(uri);
+    const key = own ? uri.toString() : `${uri.toString()} ${projects}`;
     let hit = this.cache.get(key);
     if (!hit || hit.version !== doc.version) {
-      hit = { version: doc.version, data: this.analyze(doc) };
+      hit = { version: doc.version, data: this.analyze(doc, projects!, !own) };
       this.cache.set(key, hit);
     }
     const data = await hit.data;
@@ -1057,7 +1094,12 @@ export class TokenDecorator implements vscode.Disposable {
     return data;
   };
 
-  private async analyze(doc: vscode.TextDocument): Promise<DocData | undefined> {
+  /** The folders whose project rules apply to a document, as a key. */
+  private projectsOf(uri: vscode.Uri): string {
+    return [...new Set(this.tags.map((t) => t.folder).filter((f): f is string => !!f && inFolder(f, uri)))].join(" ");
+  }
+
+  private async analyze(doc: vscode.TextDocument, projects: string, library: boolean): Promise<DocData | undefined> {
     const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", doc.uri);
     const tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", doc.uri);
     if (!legend || !tokens) return undefined;
@@ -1072,11 +1114,14 @@ export class TokenDecorator implements vscode.Disposable {
     if (wantsSymbols && (symbols.length || decoded.some((t) => t.modifiers.includes("declaration")))) {
       this.support.report(doc.languageId, "symbols", symbols.length > 0, fileName(doc.uri));
     }
-    const tags = this.tags.filter((t) => inFolder(t.folder, doc.uri));
+    const folders = projects.split(" ");
+    const tags = this.tags.filter((t) => !t.folder || folders.includes(t.folder));
     const custom = new Set(this.tags.flatMap((t) => t.modifiers));
     const follow = here.some(usesContains);
     const docs = here.some(usesDoc);
-    return new DocData(doc, decoded, symbols, this.load, tags, custom, follow, docs, this.log, this.support, servers);
+    // Library files it reaches get the same project rules.
+    const load: Loader = (uri) => this.load(uri, projects);
+    return new DocData(doc, decoded, symbols, load, tags, custom, follow, docs, this.log, this.support, servers, library);
   }
 
   /** All symbols of the document, flattened; providers return either a tree or a flat list. */

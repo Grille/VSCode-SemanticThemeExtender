@@ -102,7 +102,7 @@ export interface FileSpec {
 }
 
 const TOKEN_TYPES = ["class", "struct", "interface", "enum", "variable", "property", "method", "function", "parameter", "decorator", "selfParameter"];
-const TOKEN_MODIFIERS = ["declaration", "readonly", "static", "classMember", "async"];
+const TOKEN_MODIFIERS = ["declaration", "readonly", "static", "classMember", "async", "builtin"];
 
 export const SymbolKind = { File: 0, Module: 1, Namespace: 2, Package: 3, Class: 4, Method: 5, Property: 6, Field: 7, Constructor: 8, Enum: 9, Interface: 10, Function: 11, Variable: 12, Constant: 13, Struct: 22 };
 
