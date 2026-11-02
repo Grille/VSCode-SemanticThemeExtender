@@ -68,6 +68,22 @@ describe("Python, with Pylance", () => {
       main = await open("python/main.py");
     });
 
+    it("aliases stand for their type: LS = Outer.Sockets", async () => {
+      // Pylance marks LS a class, without a type hierarchy; its type definition is Sockets.
+      const alias = await open("python/alias.py");
+      await setRules('inherits(text("StrEnum")) class = #AA5500');
+      await eventually(async () => assert.equal(await drawnColor(alias, 13, "Top"), "#AA5500"));
+      assert.equal(await drawnColor(alias, 9, "LS"), "#AA5500");
+      assert.equal(await drawnColor(alias, 10, "LS"), "#AA5500");
+      await setRules('contains(text("A") enumMember) class = #0055AA');
+      await eventually(async () => assert.equal(await drawnColor(alias, 10, "LS"), "#0055AA"));
+      // Sockets is an enum, LS a class: only the alias carries strenum over.
+      await setRules('inherits(text("StrEnum")) & enum += strenum', "class.strenum = #00AA00");
+      await eventually(async () => assert.equal(await drawnColor(alias, 13, "Top"), "#00AA00"));
+      assert.ok((await inspect(alias, 10, "LS")).some((l) => l.startsWith("  custom modifier strenum:") && l.includes("which LS stands for")));
+      main = await open("python/main.py");
+    });
+
     it("from(): typing's helpers, by the file they're defined in", async () => {
       // Pylance's hovers don't say; go to definition leads to Lib/typing.py or a typeshed typing.pyi.
       await setRules('from("typing") = #AA5500', 'from("builtins") class = #0055AA');

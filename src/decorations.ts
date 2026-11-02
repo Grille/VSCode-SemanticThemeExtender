@@ -227,6 +227,9 @@ interface Sym {
   nameRange?: vscode.Range;
 }
 
+// Symbols that may be another name for a type (LS = Outer.Sockets), when the server marks their name as one.
+const ALIAS_KINDS = new Set([vscode.SymbolKind.Variable, vscode.SymbolKind.Constant, vscode.SymbolKind.Field]);
+
 // Symbols whose insides are not direct members of the symbol around them: a method body isn't
 // part of the class, a nested class's members aren't the outer class's.
 const SCOPES = new Set([
@@ -464,6 +467,9 @@ class DocData {
   private importing?: Promise<void>;
   /** Names used here and defined in another workspace file: their definitions' name tokens. */
   private definitions = new Map<string, { data: DocData; token: Token }[]>();
+  /** Names declared here as another name for a type (LS = Outer.Sockets): that type's name token. */
+  private aliases = new Map<string, { data: DocData; token: Token }>();
+  private aliasing?: Promise<void>;
   /** Hover text by token text, for doc() and signature(). */
   private hovers = new Map<string, HoverText>();
   /** from(): the paths of the files each name is defined in, by token text, and the lookups on the way. */
@@ -544,16 +550,67 @@ class DocData {
   private async applyTags() {
     this.taggingNow = true;
     try {
+      await this.resolveAliases();
+      this.followAliases();
       for (const tag of this.tags) {
         await this.prepare(tag.when);
         const hits = this.tokens.filter((t) => this.test(tag.when, t));
         for (const t of hits) this.give(t, tag.modifiers, tag.source);
+        this.followAliases();
         // Answers computed before these modifiers existed may be out of date now.
         this.owners.clear();
       }
     } finally {
       this.taggingNow = false;
     }
+  }
+
+  /**
+   * Finds the aliases declared here: a variable or constant whose name the server marks as a type
+   * stands for the type its type definition leads to. Go to definition leads to the alias itself,
+   * and it has no type hierarchy, so inherits(), contains(), decorated() and custom modifiers look
+   * at that type instead.
+   */
+  private resolveAliases(): Promise<void> {
+    return (this.aliasing ??= this.findAliases());
+  }
+
+  private async findAliases() {
+    if (this.library) return;
+    const names = this.symbols
+      .filter((s) => ALIAS_KINDS.has(s.kind))
+      .map((s) => this.names.get(s))
+      .filter((t): t is Token => !!t && t.chain.some((c) => TYPE_TOKENS.includes(c)));
+    await inBatches(names, async (t) => {
+      const [d] = await vscode.commands
+        .executeCommand<(vscode.Location | vscode.LocationLink)[]>("vscode.executeTypeDefinitionProvider", this.doc.uri, t.range.start)
+        .then(
+          (r) => r ?? [],
+          () => [],
+        );
+      if (!d) return;
+      const uri = targetOf(d);
+      const data = uri.toString() === this.doc.uri.toString() ? this : await this.load(uri);
+      const token = data?.tokenAt("targetUri" in d ? (d.targetSelectionRange ?? d.targetRange) : d.range);
+      if (data && token && token !== t) this.aliases.set(t.text, { data, token });
+    });
+  }
+
+  /** Aliases take over the custom modifiers of the type they stand for. */
+  private followAliases() {
+    for (const [text, { data, token }] of this.aliases) {
+      const modifiers = token.modifiers.filter((m) => this.custom.has(m));
+      if (!modifiers.length) continue;
+      const origin = `from ${token.text} in ${vscode.workspace.asRelativePath(data.doc.uri)}, which ${text} stands for`;
+      for (const t of this.tokens) if (t.text === text) this.give(t, modifiers, origin);
+    }
+  }
+
+  /** Where else contains() and decorated() look for a name: its definitions in other files, the type an alias stands for. */
+  private standsFor(text: string): { data: DocData; token: Token }[] {
+    const alias = this.aliases.get(text);
+    const definitions = this.definitions.get(text) ?? [];
+    return alias ? [...definitions, alias] : definitions;
   }
 
   /**
@@ -738,7 +795,8 @@ class DocData {
 
   /** Whether a type token's type has a base type whose name token meets inner. */
   private inheritsAt(t: Token, inner: Condition): Promise<boolean> {
-    return this.anyBase(this.doc.uri, t.range.start, inner);
+    const alias = this.aliases.get(t.text);
+    return alias ? this.anyBase(alias.data.doc.uri, alias.token.range.start, inner) : this.anyBase(this.doc.uri, t.range.start, inner);
   }
 
   /** c as it is in this document: see fold(). */
@@ -763,6 +821,7 @@ class DocData {
         return this.locate(scope ?? among ?? this.tokens);
       case "inherits": {
         await this.probeHierarchy();
+        await this.resolveAliases();
         await this.prepare(c.inner);
         // Asked per type name as needed: tokens the cheap parts let through may grow, e.g. once
         // custom modifiers arrive. At most MAX_TYPES names per file.
@@ -783,8 +842,10 @@ class DocData {
       }
       case "contains":
       case "decorated": {
+        await this.resolveAliases();
         await this.prepare(c.inner);
-        const elsewhere = new Set([...this.definitions.values()].flatMap((list) => list.map((d) => d.data)));
+        const elsewhere = new Set([...this.definitions.values(), ...[...this.aliases.values()].map((a) => [a])].flatMap((list) => list.map((d) => d.data)));
+        elsewhere.delete(this);
         for (const data of elsewhere) await data.prepare(c.inner);
         return;
       }
@@ -828,9 +889,9 @@ class DocData {
       case "selector":
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":
-        return this.ownersOf(c.inner).has(t.text) || !!this.definitions.get(t.text)?.some((d) => d.data.ownersOf(c.inner).has(d.token.text));
+        return this.ownersOf(c.inner).has(t.text) || this.standsFor(t.text).some((d) => d.data.ownersOf(c.inner).has(d.token.text));
       case "decorated":
-        return this.decoratedBy(c).has(t.text) || !!this.definitions.get(t.text)?.some((d) => d.data.decoratedBy(c).has(d.token.text));
+        return this.decoratedBy(c).has(t.text) || this.standsFor(t.text).some((d) => d.data.decoratedBy(c).has(d.token.text));
       case "within":
         return this.symbols.some((s) => {
           if (!s.range.contains(t.range) || s.nameRange?.contains(t.range)) return false;
@@ -1140,7 +1201,8 @@ export class TokenDecorator implements vscode.Disposable {
     // What this document's language and servers leave of the rules decides what's worth asking for.
     // Not limited to its folder: it may be another folder's base type file.
     const here = [...this.rules, ...this.tags, ...this.messages].map((r) => fold(r.when, doc.languageId, servers));
-    const wantsSymbols = here.some(needsSymbols);
+    // Custom modifiers follow aliases, found among the symbols.
+    const wantsSymbols = here.some(needsSymbols) || (!library && this.tags.length > 0);
     const symbols = wantsSymbols ? await this.symbols(doc) : [];
     // Any server with symbols has some for a file that declares something.
     if (wantsSymbols && (symbols.length || decoded.some((t) => t.modifiers.includes("declaration")))) {

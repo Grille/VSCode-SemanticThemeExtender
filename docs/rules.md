@@ -236,6 +236,18 @@ name declared in the same file is defined there without asking. So
 C# leads to a decompiled file named after the type, which doesn't say its namespace or assembly;
 use `signature` there.
 
+### Aliases
+
+```python
+LS = Outer.Sockets
+```
+
+A name that stands for a type is treated as that type: `inherits`, `contains` and `decorated` look
+at the type it stands for, and it takes over that type's [custom modifiers](#custom-modifiers).
+An alias is a variable or constant among the document symbols whose name the language server
+marks as a type; go to type definition leads to the type. The token type stays what the language
+server says: Pylance marks `LS` a `class`, though `Sockets` is an `enum`.
+
 ### Unsupported conditions
 
 Some conditions need more from the language server than tokens: `inherits` a type hierarchy,
@@ -284,6 +296,7 @@ name rules select it by, and a selector like `class.slotted` can't hold a variab
 
 A name used in one file and defined in another workspace file gets the custom modifiers of its
 definition (asked of the language server's go to definition), a moment after the rest is drawn.
+An [alias](#aliases) gets those of the type it stands for.
 
 Modifiers no language server defines count as custom ones, except as plain names after `string`,
 `comment`, `keyword` or `variable`, which stay TextMate scopes (`variable.foo`): there write
