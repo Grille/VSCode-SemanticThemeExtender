@@ -57,13 +57,14 @@ $border = match($type) {
   _               -> keyword
 }
 
-match($theme) {
-  "Dark Modern" | "Dark 2026" {
-    struct = #86C691
-  }
-  "*Light*" {
-    interface = $none                      ; no rule here
-  }
+theme("Dark Modern", "Dark 2026") {
+  struct = #86C691
+}
+theme("*Light*") {
+  interface = $none                        ; no rule here
+}
+dark & contrast {
+  enum = style(class, bold)
 }
 
 

@@ -17,7 +17,7 @@
     { "match": "\\b(?:contains|within|inherits|decorated)(?=\\s*\\()", "name": "keyword.control.symbol.semantic-theme-rules" },
     { "match": "\\b(?:text|doc|signature)(?=\\s*\\()", "name": "keyword.control.text.semantic-theme-rules" },
     { "match": "@[\\w-]*", "name": "entity.name.function.expression.semantic-theme-rules" },
-    { "match": "\\b(?:language|server)(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },
+    { "match": "\\b(?:language|server|theme)(?=\\s*\\()", "name": "keyword.control.language.semantic-theme-rules" },
     { "match": "\\b(?:ui|semantic|textmate)(?!\\s*=)(?=\\s+[A-Za-z_*]|\\s*\\{)", "name": "keyword.control.kind.semantic-theme-rules" },
     {
       "match": "(\\$[\\w-]+)\\s*(=)(?!=)",

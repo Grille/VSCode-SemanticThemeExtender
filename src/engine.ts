@@ -15,7 +15,7 @@
 // decorations like every other head, and UI colors and TextMate scopes are errors. It is meant for
 // += (what tokens are); colors there are drawn but warned about, they belong in the global rules.
 
-import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, Problem, Range, RulesFile, Severity, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
+import { Cond, conditionText, Expr, Flag, matchesPattern, NameKind, patternToRegExp, Problem, Range, RulesFile, Severity, Stmt, stripCondition, TokenCondition, Value, VarDecl } from "./cfg";
 import { planRule } from "./plan";
 import { Color, parseHex, toHex } from "./color";
 import { CycleError, EvalContext, EvalError, evaluateColor, NoMatch } from "./rules";
@@ -227,13 +227,68 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
   // The rule's head together with the heads of enclosing blocks.
   const headOf = (st: { head: Cond; when?: Cond }): Cond => (st.when ? { kind: "and", left: st.when, right: st.head, range: st.head.range } : st.head);
 
+  // theme(...) and dark / light / contrast hold or don't for the whole file: decided here, so
+  // what remains is about tokens. true or false when nothing else is left.
+  const decide = (c: Cond): Cond | boolean => {
+    switch (c.kind) {
+      case "theme":
+        return c.patterns.some((p) => patternToRegExp(p, "i").test(themeId));
+      case "flag":
+        return flags.has(c.flag);
+      case "not": {
+        const operand = decide(c.operand);
+        return typeof operand === "boolean" ? !operand : { ...c, operand };
+      }
+      case "and":
+      case "or": {
+        const left = decide(c.left);
+        const right = decide(c.right);
+        // The value that settles it: false for &, true for |.
+        const settles = c.kind === "or";
+        if (left === settles || right === settles) return settles;
+        if (typeof left === "boolean") return right;
+        if (typeof right === "boolean") return left;
+        return { ...c, left, right };
+      }
+      default:
+        return c;
+    }
+  };
+
+  // For checking a rule whatever the theme: the head without its theme conditions.
+  const withoutTheme = (c: Cond): Cond | undefined => {
+    switch (c.kind) {
+      case "theme":
+      case "flag":
+        return undefined;
+      case "not": {
+        const operand = withoutTheme(c.operand);
+        return operand && { ...c, operand };
+      }
+      case "and":
+      case "or": {
+        const left = withoutTheme(c.left);
+        const right = withoutTheme(c.right);
+        return left && right ? { ...c, left, right } : (left ?? right);
+      }
+      default:
+        return c;
+    }
+  };
+
+  // The head to check: problems with it show whatever the active theme.
+  const checkedHead = (st: Extract<Stmt, { head: Cond }>): Cond | undefined => {
+    const head = withoutTheme(headOf(st));
+    if (!head) result.problems.push({ range: st.selectorRange, message: "Theme conditions alone don't say which tokens; add a selector, e.g. dark struct" });
+    return head;
+  };
+
   // Custom modifiers this file assigns, so using them doesn't get the might-be-a-typo hint.
   const assigned = new Set<string>();
   const collect = (stmts: Stmt[]) => {
     for (const st of stmts) {
       if (st.kind === "tag") st.modifiers.forEach((m) => assigned.add(m));
       else if (st.kind === "when" || st.kind === "override" || st.kind === "target") collect(st.body);
-      else if (st.kind === "block") st.arms.forEach((a) => collect(a.body));
     }
   };
   collect(file.stmts);
@@ -249,10 +304,13 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
             message: st.kind === "tag" ? "Modifiers can only be added to semantic tokens" : "Messages can only be put on semantic tokens",
           });
         } else {
-          result.problems.push(...planRule(headOf(st), "semantic", registry, assigned).problems);
+          const head = checkedHead(st);
+          if (head) result.problems.push(...planRule(head, "semantic", registry, assigned).problems);
         }
       } else if (st.kind === "rule") {
-        const plan = planRule(headOf(st), st.target, registry, assigned);
+        const head = checkedHead(st);
+        if (!head) continue;
+        const plan = planRule(head, st.target, registry, assigned);
         result.problems.push(...plan.problems);
         const notSemantic = options.project ? (plan.names ?? []).filter((n) => registry.classify(n, st.target) !== "semantic" && registry.classify(n, st.target)) : [];
         if (notSemantic.length) {
@@ -273,8 +331,6 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
         checkValue(st.value);
       } else if (st.kind === "when" || st.kind === "override" || st.kind === "target") {
         check(st.body);
-      } else if (st.kind === "block") {
-        st.arms.forEach((a) => check(a.body));
       }
     }
   };
@@ -302,11 +358,6 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
 
   const apply = (stmts: Stmt[], override: boolean) => {
     for (const st of stmts) {
-      if (st.kind === "block") {
-        const arm = st.arms.find((a) => matchesPattern(a.pattern, flags, themeId));
-        if (arm) apply(arm.body, override);
-        continue;
-      }
       if (st.kind === "override") {
         apply(st.body, true);
         continue;
@@ -315,21 +366,27 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
         apply(st.body, override);
         continue;
       }
+      if (st.kind !== "tag" && st.kind !== "message" && st.kind !== "rule") continue;
+      const head = decide(headOf(st));
+      if (typeof head === "boolean") {
+        // false: not for this theme; true: theme conditions alone, reported when checking.
+        if (!head) result.log.push(`skip  ${st.selector} (line ${st.selectorRange.start.line + 1}): not for this theme`);
+        continue;
+      }
       if (st.kind === "tag") {
         if (st.target && st.target !== "semantic") continue;
-        const when = stripCondition(headOf(st));
+        const when = stripCondition(head);
         result.tagRules.push({ when, modifiers: st.modifiers, line: st.selectorRange.start.line + 1 });
         result.log.push(`tag   ${conditionText(when)} += ${st.modifiers.join(", ")}  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }
       if (st.kind === "message") {
         if (st.target && st.target !== "semantic") continue;
-        const when = stripCondition(headOf(st));
+        const when = stripCondition(head);
         result.messageRules.push({ when, severity: st.severity, message: st.message, code: st.code, line: st.selectorRange.start.line + 1 });
         result.log.push(`msg   ${conditionText(when)} := ${st.severity}("${st.message}")  (line ${st.selectorRange.start.line + 1})`);
         continue;
       }
-      if (st.kind !== "rule") continue;
       const line = st.selectorRange.start.line + 1;
       let value;
       try {
@@ -343,7 +400,7 @@ export function compile(file: RulesFile, resolver: ThemeResolver, options: Compi
         result.log.push(`skip  ${st.selector} (line ${line}): no match arm applies to this theme`);
         continue;
       }
-      const plan = planRule(headOf(st), st.target, registry);
+      const plan = planRule(head, st.target, registry);
       if (plan.decoration) {
         addTextRule(stripCondition(plan.decoration), value, line);
         continue;

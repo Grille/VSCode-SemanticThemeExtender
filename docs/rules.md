@@ -223,7 +223,7 @@ edit; `contains`, `decorated` and `within` match nothing there until then.
 
 ### Patterns
 
-Wherever a pattern is taken (`text`, `doc`, `signature`, `match($theme)`), it is either:
+Wherever a pattern is taken (`text`, `doc`, `signature`, `theme`, `match($theme)`), it is either:
 
 - a quoted glob, where `*` matches anything and the whole text must match: `"*Light*"`
 - a regular expression literal, for advanced cases: `/^Dark/i`, `signature(/: int\b/)`,
@@ -310,34 +310,43 @@ three levels unless you set more.
 ## Matching themes
 
 ```ini
-$structLike = #86C691
+theme("Dark Modern", "Dark 2026") {
+  struct = #86C691
+}
+theme("*Light*") interface = $none
+dark & contrast {
+  enum = style(emphasize(class, 20%), bold)
+}
+
 $accent = match($type) {
   dark & contrast -> emphasize(class, 20%)
   _               -> emphasize(class)
 }
-
-match($theme) {
-  "Dark Modern" | "Dark 2026" {
-    struct = $structLike
-  }
-  "*Light*" {
-    interface = $none
-  }
-}
 ```
 
-`match` picks a value, or a block of rules, by the active theme. Arms are tried top to bottom
-and the first match wins; `_` matches anything.
+Rules for some themes only have a theme condition in their head, like `language(python)` for
+some languages:
+
+- `theme("Dark Modern", "*Light*")`: the active theme's name, as [patterns](#patterns), any case.
+- `dark`, `light`, `contrast`: the theme's type. A high-contrast dark theme is `dark & contrast`.
+
+They combine with everything else in a head, `theme("*Light*") & language(python) { … }`, and
+are decided once when the rules are applied, so plain selectors still go to settings. A head
+needs a selector besides them: `dark struct = …`, not `dark = …`. Rules for other themes are
+still checked as you type.
+
+`match` picks a value by the active theme. Arms are tried top to bottom and the first match
+wins; `_` matches anything.
 
 | Subject | Patterns |
 | --- | --- |
-| `$type` | Flags `dark`, `light`, `contrast`, combined with `&` (and), `\|` (or), `!` (not) and parentheses. A high-contrast dark theme is `dark & contrast` |
+| `$type` | Flags `dark`, `light`, `contrast`, combined with `&` (and), `\|` (or), `!` (not) and parentheses |
 | `$theme` | Theme names as [patterns](#patterns): `"Dark Modern" \| "*Light*"` |
 
 `dark` and `light` are decided once, by the actual brightness of the theme's editor background,
-and mean the same everywhere: in `match($type)`, in `offset` conditions and in `emphasize` /
-`soften`. `contrast` comes from the theme's declared type. Impossible or unreachable arms, and
-value matches that don't cover every theme type, are flagged as you type.
+and mean the same everywhere: in heads, in `match($type)`, in `offset` conditions and in
+`emphasize` / `soften`. `contrast` comes from the theme's declared type. Impossible or
+unreachable arms, and matches that don't cover every theme type, are flagged as you type.
 
 ## Project rules
 

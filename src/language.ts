@@ -23,7 +23,7 @@ const STYLES = [...STYLE_NAMES];
 export const PROJECT_FILE = ".vscode/semantic-theme.str";
 export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
 
-const KEYWORDS = new Set(["match", "style", "override", "language", "server", "text", "doc", "signature", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);
+const KEYWORDS = new Set(["match", "style", "override", "language", "server", "theme", ...FLAGS, "text", "doc", "signature", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);
 
 const KIND_LABELS: Record<NameKind, string> = { semantic: "Semantic selector", textmate: "TextMate scope", ui: "UI color" };
 
@@ -47,8 +47,8 @@ const FUNCTION_DOCS: Record<string, [string, string]> = {
 };
 
 const BUILTIN_DOCS: Record<string, string> = {
-  theme: 'The active theme\'s name. Use with match: match($theme) { "Dark Modern" { ... } }',
-  type: "The active theme's type as flags: dark or light, plus contrast. Use with match: match($type) { dark -> ... }",
+  theme: 'The active theme\'s name, for a value: match($theme) { "Dark Modern" -> ... }. For rules: theme("Dark Modern") { ... }',
+  type: "The active theme's type as flags: dark or light, plus contrast, for a value: match($type) { dark -> ... }. For rules: dark & contrast { ... }",
   none: "No rule for this selector, e.g. enum = $none",
 };
 
@@ -170,13 +170,8 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
     return item;
   };
 
-  const matchSnippet = (asValue: boolean) =>
-    snippet(
-      "match",
-      asValue ? "match(\\$${1|type,theme|}) {\n\t${2:dark} -> $3\n\t_ -> $4\n}" : "match(\\$${1|type,theme|}) {\n\t${2:dark} {\n\t\t$3\n\t}\n}",
-      vscode.CompletionItemKind.Keyword,
-      asValue ? "Choose a value by theme type or name" : "Rules for matching themes",
-    );
+  const matchSnippet = () =>
+    snippet("match", "match(\\$${1|type,theme|}) {\n\t${2:dark} -> $3\n\t_ -> $4\n}", vscode.CompletionItemKind.Keyword, "Choose a value by theme type or name");
 
   context.subscriptions.push(
     diagnostics,
@@ -353,7 +348,12 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
             return [
               ...tokenTypeItems(resolver, vscode.CompletionItemKind.Property),
               ...uiColorItems(resolver),
-              matchSnippet(false),
+              snippet("theme", 'theme("${1:Dark Modern}") {\n\t$2\n}', vscode.CompletionItemKind.Keyword, 'Rules for matching themes, by name: theme("Dark Modern", "*Light*"). By type: dark, light, contrast'),
+              ...FLAGS.map((flag) => {
+                const item = new vscode.CompletionItem(flag, vscode.CompletionItemKind.EnumMember);
+                item.documentation = `Holds for ${flag === "contrast" ? "high contrast" : flag} themes, e.g. dark & contrast { ... }`;
+                return item;
+              }),
               snippet("override", "override {\n\t$1\n}", vscode.CompletionItemKind.Keyword, "Rules that also replace the theme's own colors"),
               snippet("contains", 'contains(text("${1:__slots__}") ${2:variable.classMember}) ${3:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a symbol (class, function, ...) that directly contains a matching token"),
               snippet("decorated", 'decorated(text("${1:dataclass}")) ${2:class}', vscode.CompletionItemKind.Keyword, "Only tokens naming a symbol (class, function, ...) with a matching decorator or [Attribute]"),
@@ -382,7 +382,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
               const [body, docs] = FUNCTION_DOCS[name] ?? [`${name}($1)`, ""];
               return snippet(name, body, vscode.CompletionItemKind.Function, docs);
             });
-          const items = [...functions, ...tokenTypeItems(resolver, vscode.CompletionItemKind.Color), ...uiColorItems(resolver), matchSnippet(true)];
+          const items = [...functions, ...tokenTypeItems(resolver, vscode.CompletionItemKind.Color), ...uiColorItems(resolver), matchSnippet()];
           return arg === "first" ? [...styleItems(), ...items] : items;
         },
       },
@@ -419,7 +419,7 @@ export function registerLanguage(context: vscode.ExtensionContext, host: Languag
 function ruleAt(stmts: Stmt[], pos: vscode.Position): Rule | undefined {
   for (const st of stmts) {
     if (st.kind === "rule" && st.selectorRange.start.line === pos.line && st.selectorRange.start.col === pos.character) return st;
-    const bodies = st.kind === "override" || st.kind === "target" || st.kind === "when" ? [st.body] : st.kind === "block" ? st.arms.map((a) => a.body) : [];
+    const bodies = st.kind === "override" || st.kind === "target" || st.kind === "when" ? [st.body] : [];
     for (const body of bodies) {
       const found = ruleAt(body, pos);
       if (found) return found;
@@ -462,6 +462,7 @@ function cursorContext(before: string): CursorContext {
   if (at) return { kind: "expression", typed: at[1] };
   const server = /\bserver\(\s*(?:[\w.-]+\s*,\s*)*([\w.-]*)$/.exec(current);
   if (server) return { kind: "server", typed: server[1] };
+  if (/\btheme\(\s*(?:"[^"]*"\s*,\s*)*$/.test(current)) return { kind: "pattern", subject: "theme" };
 
   const line = lines[lines.length - 1];
   const top = stack[stack.length - 1];

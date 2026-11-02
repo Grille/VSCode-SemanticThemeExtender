@@ -30,7 +30,8 @@
 //                                      settings, anything else is drawn as decorations
 //   ui | semantic | textmate rule or { rules }  say what kind of name a selector is, instead of
 //                                      inferring it: token type, then UI color ID, then TextMate scope
-//   match($type) { dark & contrast { rules } _ { rules } }      block: rules for matching themes
+//   theme("*Light*") { rules }, dark & contrast { rules }       rules for matching themes: theme
+//                                      names and $type flags as conditions, decided when applying
 //
 // Later rules in the file override earlier ones for the same selector.
 //   value: color | style(color, bold | !italic) | $none | match($type) { dark -> value  _ -> value }
@@ -186,6 +187,9 @@ export type Cond =
   /** text: the token's own text; doc / signature: the prose / the code of its hover. */
   | { kind: "text" | "doc" | "signature"; patterns: TextPattern[]; range: Range }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Cond; range: Range }
+  /** theme("*Light*") and dark, light, contrast: the active theme, decided when the rules are applied. */
+  | { kind: "theme"; patterns: TextPattern[]; range: Range }
+  | { kind: "flag"; flag: Flag; range: Range }
   | { kind: "not"; operand: Cond; range: Range }
   | { kind: "and" | "or"; left: Cond; right: Cond; range: Range }
   | { kind: "name"; name: string; range: Range };
@@ -251,6 +255,11 @@ export function stripCondition(c: Cond): TokenCondition {
     case "name":
       // Only before names are resolved, for the text of a head: "@slots class".
       return { kind: "selector", selector: `@${c.name}` };
+    // Only for the text of a head; applying rules decides them first (engine.ts).
+    case "theme":
+      return { kind: "selector", selector: `theme(${c.patterns.map(patternText).join(", ")})` };
+    case "flag":
+      return { kind: "selector", selector: c.flag };
     default:
       return { kind: c.kind, left: stripCondition(c.left), right: stripCondition(c.right) };
   }
@@ -264,14 +273,7 @@ export interface WhenBlock {
   range: Range;
 }
 
-export interface Block {
-  kind: "block";
-  subject: Subject;
-  arms: Arm<Stmt[]>[];
-  range: Range;
-}
-
-export type Stmt = VarDecl | ExpressionDecl | Rule | TagRule | MessageRule | Block | Override | Target | WhenBlock;
+export type Stmt = VarDecl | ExpressionDecl | Rule | TagRule | MessageRule | Override | Target | WhenBlock;
 
 export interface RulesFile {
   stmts: Stmt[];
@@ -626,6 +628,17 @@ export function parseRulesFile(text: string): RulesFile {
       const close = expect(")", "')' to close server(...)");
       return { kind: "server", ids, range: span(t.range, close.range) };
     }
+    if (call("theme")) {
+      next();
+      next();
+      const patterns = parsePatterns('a theme name in quotes or a /regex/, e.g. theme("*Light*")');
+      const close = expect(")", "')' to close theme(...)");
+      return { kind: "theme", patterns, range: span(t.range, close.range) };
+    }
+    if (t?.type === "ident" && (FLAGS as string[]).includes(t.text)) {
+      next();
+      return { kind: "flag", flag: t.text as Flag, range: t.range };
+    }
     for (const kind of ["contains", "within", "inherits", "decorated"] as const) {
       if (!call(kind)) continue;
       next();
@@ -641,7 +654,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return { kind: "selector", selector: t.text, range: t.range };
     }
-    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), server(...), contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
+    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), server(...), theme(...), dark, light, contrast, contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
   }
 
   // ---- color expressions
@@ -795,32 +808,11 @@ export function parseRulesFile(text: string): RulesFile {
     }
     const close = expect("}", "'}' to close the match");
     if (!arms.length) problems.push({ range: span(kw.range, close.range), message: "match has no arms", warning: true });
-    checkArms(subject, arms, true);
+    checkArms(subject, arms);
     return build(kw.range, subject, arms, close.range);
   }
 
   // ---- statements
-
-  function parseBlock(): Block {
-    const kw = next();
-    next();
-    const subj = next();
-    if (subj?.type !== "var" || (subj.text !== "type" && subj.text !== "theme")) fail("match works on $type or $theme", subj);
-    const subject = subj.text as Subject;
-    expect(")", "')' after the match subject");
-    expect("{");
-    const arms: Arm<Stmt[]>[] = [];
-    while (peek() && !isPunct(peek(), "}")) {
-      const pattern = parsePattern(subject);
-      expect("{", "'{' and rules for this arm");
-      arms.push({ pattern, body: parseStatements(false) });
-      expect("}", "'}' to close the arm");
-      expectBreak(false);
-    }
-    const close = expect("}", "'}' to close the match");
-    checkArms(subject, arms, false);
-    return { kind: "block", subject, arms, range: span(kw.range, close.range) };
-  }
 
   // $variables and @expressions; true when the name can be declared.
   function declare(t: Token, topLevel: boolean, what: "variable" | "expression"): boolean {
@@ -863,7 +855,6 @@ export function parseRulesFile(text: string): RulesFile {
       if (declare(t, topLevel, "expression")) expressions.set(t.text, decl);
       return decl;
     }
-    if (isMatchStart()) return parseBlock();
     // "override { rules }" or "override <statement>"; "override = ..." is a rule for a token named override.
     if (t.type === "ident" && t.text === "override" && peek(1) && !isPunct(peek(1), "=")) {
       next();
@@ -983,7 +974,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return fail(`Expected '=', '+=' or ':=' after '${conditionText(stripCondition(head))}'`, n && sameLine(tokens[i - 1], n) ? n : tokens[i - 1]);
     }
-    return fail("Expected a rule (selector = value), a variable ($name = value), an expression (@name => head), a match, or an override / ui / semantic / textmate block");
+    return fail("Expected a rule (selector = value), a variable ($name = value), an expression (@name => head), or an override / ui / semantic / textmate block");
   }
 
   function parseStatements(topLevel: boolean): Stmt[] {
@@ -1019,7 +1010,7 @@ export function parseRulesFile(text: string): RulesFile {
   }
 
   // Static checks for $type arms: impossible, unreachable, not exhaustive.
-  function checkArms<T>(subject: Subject, arms: Arm<T>[], isValue: boolean) {
+  function checkArms<T>(subject: Subject, arms: Arm<T>[]) {
     if (subject !== "type") return;
     const covered = new Set<number>();
     for (const arm of arms) {
@@ -1031,7 +1022,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       kinds.forEach((k) => covered.add(k));
     }
-    if (isValue && arms.length && covered.size < THEME_KINDS.length) {
+    if (arms.length && covered.size < THEME_KINDS.length) {
       const missing = THEME_KINDS.filter((_, k) => !covered.has(k)).map((f) => [...f].join(" & "));
       problems.push({
         range: arms[0].pattern.range,
@@ -1120,8 +1111,6 @@ export function parseRulesFile(text: string): RulesFile {
         case "override":
         case "target":
           return [{ ...st, body: resolveAll(st.body) }];
-        case "block":
-          return [{ ...st, arms: st.arms.map((a) => ({ ...a, body: resolveAll(a.body) })) }];
         default:
           return [st];
       }
@@ -1175,8 +1164,10 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;   style(c, bold | !italic)  font styles; style(underline) keeps the color
 ;   $none                    no rule for this selector
 ;
-;   match($type)  { dark & contrast -> ...   light -> ...   _ -> ... }    flags: dark light contrast
-;   match($theme) { "Dark Modern" | "*Light*" { rules } }                 a block of rules
+;   theme("Dark Modern", "*Light*") { rules }   rules for matching themes, by name
+;   dark & contrast { rules }                    or type: dark light contrast; also in any head
+;   match($type)  { dark & contrast -> ...   light -> ...   _ -> ... }    a value by theme type
+;   match($theme) { "Dark Modern" | "*Light*" -> ...   _ -> ... }       or by name
 ;   later rules override earlier ones for the same selector
 
 ; Visual Studio's relation between class and the other type colors, measured on its dark theme:

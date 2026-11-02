@@ -180,9 +180,6 @@ function forEachRule(stmts: Stmt[], f: (st: Rule | TagRule | MessageRule) => voi
       case "target":
         forEachRule(st.body, f);
         break;
-      case "block":
-        st.arms.forEach((a) => forEachRule(a.body, f));
-        break;
     }
   }
 }

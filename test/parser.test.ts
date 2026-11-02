@@ -1,7 +1,7 @@
 import "./fake-vscode";
 import { strict as assert } from "assert";
 import { describe, it } from "node:test";
-import { conditionText, matchesPattern, parseRulesFile, Rule, stripCondition } from "../src/cfg";
+import { conditionText, parseRulesFile, Rule, stripCondition } from "../src/cfg";
 
 const parse = (lines: string[]) => parseRulesFile(lines.join("\n"));
 const problems = (lines: string[]) => parse(lines).problems.map((p) => `${p.range.start.line + 1}: ${p.message}`);
@@ -97,16 +97,6 @@ describe("patterns", () => {
     ]);
   });
 
-  it("theme names take globs and regular expressions", () => {
-    const f = parse(["match($theme) {", "  /^dark/i { class = #111111 }", '  "*Light*" { class = #222222 }', "}"]);
-    assert.deepEqual(f.problems, []);
-    const block = f.stmts[0];
-    assert.ok(block.kind === "block");
-    const pick = (id: string) => block.arms.map((a) => matchesPattern(a.pattern, new Set(), id));
-    assert.deepEqual(pick("Dark Modern"), [true, false]);
-    assert.deepEqual(pick("Light Modern"), [false, true]);
-    assert.deepEqual(pick("Monokai"), [false, false]);
-  });
 });
 
 describe("statements", () => {

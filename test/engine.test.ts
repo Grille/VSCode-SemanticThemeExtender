@@ -3,7 +3,7 @@ import { strict as assert } from "assert";
 import * as fs from "fs";
 import * as path from "path";
 import { describe, it } from "node:test";
-import { DEFAULT_RULES } from "../src/cfg";
+import { conditionText, DEFAULT_RULES } from "../src/cfg";
 import { compileRules, errors, hints, warnings } from "./helpers";
 
 const example = (file: string) => fs.readFileSync(path.join(__dirname, "..", "..", "examples", file), "utf8");
@@ -74,6 +74,30 @@ describe("rules that are drawn", () => {
   it("a later rule with the same head replaces an earlier one, $none removes it", () => {
     const r = compileRules(['text("x") variable = #111111', 'text("x") variable = #222222', 'text("y") variable = #333333', 'text("y") variable = $none']);
     assert.deepEqual(r.textRules.map((t) => t.style), ["#222222"]);
+  });
+});
+
+describe("theme conditions", () => {
+  const both = (lines: string[]) => ["Test Dark", "Test Light"].map((theme) => compileRules(lines, {}, theme));
+
+  it("theme() takes globs and regular expressions, any case for globs", () => {
+    const [dark, light] = both(["theme(/^test d/i) { struct = #111111 }", 'theme("*LIGHT*") { struct = #222222 }']);
+    assert.deepEqual([errors(dark), errors(light)], [[], []]);
+    assert.deepEqual([dark.rules.struct, light.rules.struct], ["#111111", "#222222"]);
+  });
+
+  it("dark, light, contrast combine with each other and with token conditions", () => {
+    const [dark, light] = both(["dark & !contrast { enum = #111111 }", "light enum = #222222", 'dark text("x") variable = #333333']);
+    assert.deepEqual([dark.rules.enum, light.rules.enum], ["#111111", "#222222"]);
+    // What's left once the theme is decided is about tokens: drawn, without the theme part.
+    assert.deepEqual(dark.textRules.map((t) => conditionText(t.when)), ['text("x") variable']);
+    assert.deepEqual(light.textRules, []);
+  });
+
+  it("rules for other themes are still checked; theme conditions alone are no rule", () => {
+    const r = compileRules(['theme("Nope") { strct = #111111 }', "dark = #222222"]);
+    assert.deepEqual(errors(r), ["2: Theme conditions alone don't say which tokens; add a selector, e.g. dark struct"]);
+    assert.match(warnings(r)[0], /^1: Unknown token type 'strct'/);
   });
 });
 

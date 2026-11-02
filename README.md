@@ -27,9 +27,8 @@ typeParameter = mix(class, function, 0.5)
 override enum = style(emphasize(class), bold)
 
 ; per theme
-match($theme) {
-  "*Light*" { interface = $none }
-}
+theme("*Light*") interface = $none
+dark & contrast { enum = style(class, bold) }
 
 ; by what the language server knows
 inherits(text("Exception")) class = style(class, italic)
