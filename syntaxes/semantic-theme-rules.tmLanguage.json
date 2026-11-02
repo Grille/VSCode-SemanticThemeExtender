@@ -4,7 +4,33 @@
   "scopeName": "source.semantic-theme-rules",
   "patterns": [
     { "match": ";.*$", "name": "comment.line.semicolon.semantic-theme-rules" },
-    { "match": "\"[^\"]*\"?", "name": "string.quoted.double.semantic-theme-rules" },
+    {
+      "comment": "A message, := warn(name, \"{text} ...\"): its string has the {text} placeholder; * is just a character there.",
+      "begin": "(:=)\\s*(error|warn|info|hint)\\s*(\\()",
+      "beginCaptures": {
+        "1": { "name": "keyword.operator.assignment.semantic-theme-rules" },
+        "2": { "name": "support.function.semantic-theme-rules" },
+        "3": { "name": "punctuation.section.semantic-theme-rules" }
+      },
+      "end": "\\)|$",
+      "endCaptures": { "0": { "name": "punctuation.section.semantic-theme-rules" } },
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"|$",
+          "name": "string.quoted.double.message.semantic-theme-rules",
+          "patterns": [{ "match": "\\{text\\}", "name": "constant.character.format.placeholder.semantic-theme-rules" }]
+        },
+        { "include": "$self" }
+      ]
+    },
+    {
+      "comment": "Any other string is a pattern: * matches anything.",
+      "begin": "\"",
+      "end": "\"|$",
+      "name": "string.quoted.double.semantic-theme-rules",
+      "patterns": [{ "match": "\\*", "name": "constant.character.escape.wildcard.semantic-theme-rules" }]
+    },
     { "match": "/(?:\\\\.|\\[(?:\\\\.|[^\\]\\\\])*\\]|[^/\\\\\\[])+/[A-Za-z]*", "name": "string.regexp.semantic-theme-rules" },
     {
       "match": "\\b(match)\\s*\\(\\s*(\\$[\\w-]+)\\s*\\)",
@@ -37,13 +63,6 @@
     { "match": "\\$[\\w-]+", "name": "variable.other.semantic-theme-rules" },
     { "match": "#[0-9a-fA-F]{3,8}\\b", "name": "constant.numeric.color.semantic-theme-rules" },
     { "match": "->|=>", "name": "keyword.operator.arrow.semantic-theme-rules" },
-    {
-      "match": "(:=)\\s*(error|warn|info|hint)(?=\\s*\\()",
-      "captures": {
-        "1": { "name": "keyword.operator.assignment.semantic-theme-rules" },
-        "2": { "name": "support.function.semantic-theme-rules" }
-      }
-    },
     {
       "match": "(\\+=)\\s*([A-Za-z_][\\w-]*(?:\\s*,\\s*[A-Za-z_][\\w-]*)*)",
       "captures": {
