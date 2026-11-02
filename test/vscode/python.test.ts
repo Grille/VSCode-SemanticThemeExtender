@@ -76,7 +76,7 @@ describe("Python, with Pylance", () => {
     });
 
     it("project rules reach library files: the builtin tuple as a struct", async () => {
-      // As examples/.vscode/semantic-theme.str: inherits() looks at tuple in builtins.pyi.
+      // As examples/.vscode/semantic-theme.ste: inherits() looks at tuple in builtins.pyi.
       await setProjectRules(
         "python",
         'text("tuple") & class.builtin += tuple',

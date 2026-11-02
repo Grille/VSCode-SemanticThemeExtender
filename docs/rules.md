@@ -1,10 +1,10 @@
 # The rules language
 
-Rules live in two kinds of files with the same language (`.str`):
+Rules live in two kinds of files with the same language (`.ste`):
 
 - **Global rules**, opened with **Semantic Theme Extender: Open Rules**. Saving applies them
   immediately, and they sync across machines with Settings Sync (UI State).
-- **Project rules** in a workspace folder's `.vscode/semantic-theme.str`, see
+- **Project rules** in a workspace folder's `.vscode/semantic-theme.ste`, see
   [Project rules](#project-rules).
 
 The editor shows color swatches for every value as computed for the current theme, hover help
@@ -383,13 +383,13 @@ unreachable arms, and matches that don't cover every theme type, are flagged as 
 
 ## Project rules
 
-What only makes sense for one codebase goes in `.vscode/semantic-theme.str` in that workspace
+What only makes sense for one codebase goes in `.vscode/semantic-theme.ste` in that workspace
 folder (**Open Project Rules** creates it), and can be committed with the project. It says what
 tokens are, as custom modifiers; your global rules say how that looks, the same in every project
 and with your own `$variables`:
 
 ```ini
-; .vscode/semantic-theme.str
+; .vscode/semantic-theme.ste
 language(python) {
   contains(text("__slots__") variable.classMember) class += slotted
   inherits(class.slotted) & !class.slotted += leaky

@@ -1,4 +1,4 @@
-// Editor support for .str rules files: diagnostics, color swatches, hover and completion.
+// Editor support for .ste rules files: diagnostics, color swatches, hover and completion.
 
 import * as vscode from "vscode";
 import { CONDITION_ARGS, conditionText, FLAGS, NAME_KINDS, NameKind, parseRulesFile, Problem, Range, Rule, Stmt, stripCondition, STYLE_NAMES } from "./cfg";
@@ -20,7 +20,7 @@ export interface LanguageHost {
 
 const STYLES = [...STYLE_NAMES];
 /** A project's rules, next to its settings; they apply to that workspace folder only. */
-export const PROJECT_FILE = ".vscode/semantic-theme.str";
+export const PROJECT_FILE = ".vscode/semantic-theme.ste";
 export const isProjectFile = (uri: vscode.Uri) => uri.scheme !== "semantic-theme-rules" && uri.path.toLowerCase().endsWith(`/${PROJECT_FILE}`);
 
 const KEYWORDS = new Set(["match", "style", "override", "language", "server", "theme", ...FLAGS, "text", "doc", "signature", "from", "contains", "within", "inherits", "decorated", ...NAME_KINDS, "_"]);

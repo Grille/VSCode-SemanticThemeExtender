@@ -1,11 +1,11 @@
 // The rules text lives in globalState (synced via Settings Sync) and is exposed to the
-// editor as the virtual file semantic-theme-rules:/rules.str.
+// editor as the virtual file semantic-theme-rules:/rules.ste.
 
 import * as vscode from "vscode";
 import { DEFAULT_RULES } from "./cfg";
 
 const TEXT_KEY = "semanticThemeExtender.rulesText";
-export const RULES_URI = vscode.Uri.parse("semantic-theme-rules:/rules.str");
+export const RULES_URI = vscode.Uri.parse("semantic-theme-rules:/rules.ste");
 
 export class RulesStore implements vscode.FileSystemProvider {
   private readonly changed = new vscode.EventEmitter<vscode.FileChangeEvent[]>();
@@ -68,7 +68,7 @@ export class RulesStore implements vscode.FileSystemProvider {
   }
 
   readDirectory(): [string, vscode.FileType][] {
-    return [["rules.str", vscode.FileType.File]];
+    return [["rules.ste", vscode.FileType.File]];
   }
 
   readFile(uri: vscode.Uri): Uint8Array {

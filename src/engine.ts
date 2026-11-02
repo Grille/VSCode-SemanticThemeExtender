@@ -10,7 +10,7 @@
 // (string.quoted.docstring.python) is a TextMate scope and only produces that. ui / semantic /
 // textmate say the kind explicitly; an explicit semantic rule leaves the TextMate fallback alone.
 //
-// A project's rules file (.vscode/semantic-theme.str) only applies to its own window, so nothing
+// A project's rules file (.vscode/semantic-theme.ste) only applies to its own window, so nothing
 // from it goes to settings, which all windows share: plain semantic selectors are drawn as
 // decorations like every other head, and UI colors and TextMate scopes are errors. It is meant for
 // += (what tokens are); colors there are drawn but warned about, they belong in the global rules.

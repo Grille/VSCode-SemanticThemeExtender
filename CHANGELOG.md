@@ -24,7 +24,7 @@
 - `from("typing")`: tokens defined in a matching file, as go to definition finds it: the file name with or without extensions, or with a `/` the whole path (`"*/node_modules/react/*"`); also outside the workspace.
 - Messages: `head := warn("{text} ...")` (or `error`, `info`, `hint`) puts a diagnostic on every matching token in open files; `warn(name, "...")` names one, and `semantic-theme: ignore [name]` in a comment silences it, with a quick fix to add that comment.
 - **Inspect Token** command: type, modifiers (custom ones with their origin) and matching drawn rules for the token at the cursor.
-- Project rules in `.vscode/semantic-theme.str`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
+- Project rules in `.vscode/semantic-theme.ste`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
 - Project rules' custom modifiers reach library files outside the workspace that the project's files lead to (a base type in `builtins.pyi`); library files are tagged only where asked, so `inherits()` there stays fast.
 - `@name => head` names a selector expression for reuse in heads as `@name`.
 - `text()` and `contains()` conditions combine with `&`, `|`, `!` and parentheses.

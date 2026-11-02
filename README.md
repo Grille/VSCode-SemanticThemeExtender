@@ -44,7 +44,7 @@ Rules are skipped where the theme already colors the same thing; `override` repl
 editor shows a color swatch next to every value, as computed for the current theme, with
 completion, hover help and errors as you type.
 
-A workspace can have its own rules in `.vscode/semantic-theme.str`, committed with the project:
+A workspace can have its own rules in `.vscode/semantic-theme.ste`, committed with the project:
 what its tokens *are* (`class += slotted`), while your global rules say how that looks.
 
 **[The rules language](docs/rules.md)** describes everything: selectors, conditions such as
@@ -54,7 +54,7 @@ and project rules.
 ## Commands
 
 - **Open Rules**: edit the rules file
-- **Open Project Rules**: edit (or create) the current workspace folder's `.vscode/semantic-theme.str`
+- **Open Project Rules**: edit (or create) the current workspace folder's `.vscode/semantic-theme.ste`
 - **Inspect Token**: for the token at the cursor, its type and modifiers (custom ones with the rule or file they came from), and which drawn rules match, the winner first. VS Code's own **Inspect Editor Tokens and Scopes** can't show custom modifiers: they only exist in this extension
 - **Show Resolved Theme Colors**: where each theme color comes from, and what was generated
 - **Apply Semantic Color Rules**: re-apply manually

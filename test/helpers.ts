@@ -59,7 +59,7 @@ export function decorator(global: string[], project?: { folder: string; rules: s
     messages.push(...r.messageRules.map((x) => ({ ...x, file, folder })));
   };
   add(compileRules(global), "global rules");
-  if (project) add(compileRules(project.rules, { project: true }), ".vscode/semantic-theme.str", project.folder);
+  if (project) add(compileRules(project.rules, { project: true }), ".vscode/semantic-theme.ste", project.folder);
   d.update(rules, tags, messages);
   return d;
 }

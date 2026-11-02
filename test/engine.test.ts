@@ -138,13 +138,13 @@ describe("custom modifiers", () => {
 
 describe("examples", () => {
   it("the showcase reports exactly its intended mistakes", () => {
-    const r = compileRules(example("showcase.str"));
+    const r = compileRules(example("showcase.ste"));
     const all = [...errors(r), ...warnings(r)].map((p) => p.replace(/:.*/, "")).sort((a, b) => +a - +b);
     assert.equal(all.length, 6, [...errors(r), ...warnings(r)].join("\n"));
   });
 
   it("the example project file is clean", () => {
-    const r = compileRules(example(".vscode/semantic-theme.str"), { project: true });
+    const r = compileRules(example(".vscode/semantic-theme.ste"), { project: true });
     assert.deepEqual([...errors(r), ...warnings(r), ...hints(r)], []);
   });
 });

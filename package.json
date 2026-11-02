@@ -49,7 +49,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Project rules (.vscode/semantic-theme.str) are only applied in trusted workspaces."
+      "description": "Project rules (.vscode/semantic-theme.ste) are only applied in trusted workspaces."
     }
   },
   "contributes": {
@@ -97,7 +97,7 @@
           "Semantic Theme Rules"
         ],
         "extensions": [
-          ".str"
+          ".ste"
         ],
         "configuration": "./language-configuration.json"
       }

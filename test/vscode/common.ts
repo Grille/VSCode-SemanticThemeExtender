@@ -4,7 +4,7 @@ import type { api as Api } from "../../src/extension";
 
 export const projects = path.resolve(__dirname, "..", "..", "..", "test", "fixtures", "projects");
 
-export const RULES = vscode.Uri.parse("semantic-theme-rules:/rules.str");
+export const RULES = vscode.Uri.parse("semantic-theme-rules:/rules.ste");
 
 let ext: typeof Api | undefined;
 async function extension(): Promise<typeof Api> {
@@ -19,7 +19,7 @@ export async function setRules(...lines: string[]) {
 
 /** Writes or (without lines) removes a folder's project rules. */
 export async function setProjectRules(folder: string, ...lines: string[]) {
-  const file = vscode.Uri.file(path.join(projects, folder, ".vscode", "semantic-theme.str"));
+  const file = vscode.Uri.file(path.join(projects, folder, ".vscode", "semantic-theme.ste"));
   if (lines.length) await vscode.workspace.fs.writeFile(file, Buffer.from(lines.join("\n")));
   else await vscode.workspace.fs.delete(file, { recursive: true, useTrash: false }).then(undefined, () => undefined);
 }
