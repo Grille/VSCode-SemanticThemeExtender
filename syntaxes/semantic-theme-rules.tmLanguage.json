@@ -55,7 +55,7 @@
     {
       "match": "((?:\\*(?=[.:\\s])|[A-Za-z_])(?:[\\w.:]|-(?=\\w))*)\\s*(=)",
       "captures": {
-        "1": { "name": "entity.name.type.selector.semantic-theme-rules" },
+        "1": { "patterns": [{ "include": "#accessor" }, { "match": "[^.:]+", "name": "entity.name.type.selector.semantic-theme-rules" }] },
         "2": { "name": "keyword.operator.assignment.semantic-theme-rules" }
       }
     },
@@ -76,8 +76,21 @@
     { "match": "\\b(bold|italic|underline|strikethrough)\\b(?!\\s*\\()", "name": "constant.language.style.semantic-theme-rules" },
     { "match": "\\b(style|offset|emphasize|soften|lighten|darken|saturate|desaturate|hue|mix|alpha|rgba?)(?=\\s*\\()", "name": "support.function.semantic-theme-rules" },
     { "match": "[+-]?(?:\\d+\\.?\\d*|\\.\\d+)(?:%|deg\\b|°)?", "name": "constant.numeric.semantic-theme-rules" },
-    { "match": "\\b[A-Za-z_](?:[\\w.:]|-(?=\\w))*", "name": "entity.name.type.theme-ref.semantic-theme-rules" },
+    {
+      "match": "\\b[A-Za-z_](?:[\\w.:]|-(?=\\w))*",
+      "captures": {
+        "0": { "patterns": [{ "include": "#accessor" }, { "match": "[^.:]+", "name": "entity.name.type.theme-ref.semantic-theme-rules" }] }
+      }
+    },
+    { "include": "#accessor" },
     { "match": "[{}()]", "name": "punctuation.section.semantic-theme-rules" },
     { "match": ",", "name": "punctuation.separator.semantic-theme-rules" }
-  ]
+  ],
+  "repository": {
+    "accessor": {
+      "comment": "The . and : in class.slotted, parameter:python, editor.background: neutral like a.b in code, not part of the names' color.",
+      "match": "[.:]",
+      "name": "punctuation.accessor.semantic-theme-rules"
+    }
+  }
 }
