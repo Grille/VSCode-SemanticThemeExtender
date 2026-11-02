@@ -6,6 +6,7 @@
   "version": "0.1.0",
   "publisher": "Grille",
   "license": "MIT",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/Grille/VSCode-SemanticThemeExtender.git"
