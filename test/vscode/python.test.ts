@@ -58,6 +58,16 @@ describe("Python, with Pylance", () => {
       main = await open("python/main.py");
     });
 
+    it("inherits(): every class of a file with many", async () => {
+      // VS Code keeps the last 10 type hierarchy lookups only: asked all at once, the first
+      // classes' base types came back empty.
+      const many = await open("python/protocols.py");
+      await setRules('inherits(text("Protocol")) class = #AA5500');
+      await eventually(async () => assert.equal(await drawnColor(many, 19, "Last"), "#AA5500"));
+      assert.equal(await drawnColor(many, 3, "First"), "#AA5500");
+      main = await open("python/main.py");
+    });
+
     it("from(): typing's helpers, by the file they're defined in", async () => {
       // Pylance's hovers don't say; go to definition leads to Lib/typing.py or a typeshed typing.pyi.
       await setRules('from("typing") = #AA5500', 'from("builtins") class = #0055AA');

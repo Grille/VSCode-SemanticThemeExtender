@@ -389,6 +389,49 @@ async function inBatches<T>(items: T[], f: (x: T) => Promise<void>) {
   for (let i = 0; i < items.length; i += PARALLEL) await Promise.all(items.slice(i, i + PARALLEL).map(f));
 }
 
+// VS Code keeps the answers of the last 10 prepareTypeHierarchy calls only; the supertypes of an
+// older one come back empty. So hierarchy lookups go a few at a time, and each step of a walk up
+// the bases is looked up anew, its supertypes asked right after.
+const HIERARCHY_PARALLEL = 4;
+let hierarchyBusy = 0;
+const hierarchyQueue: (() => void)[] = [];
+
+async function inHierarchy<T>(f: () => Thenable<T>): Promise<T> {
+  if (hierarchyBusy < HIERARCHY_PARALLEL) hierarchyBusy++;
+  else await new Promise<void>((r) => hierarchyQueue.push(r));
+  try {
+    return await f();
+  } finally {
+    // The slot goes on to the next in line, or is freed.
+    const next = hierarchyQueue.shift();
+    if (next) next();
+    else hierarchyBusy--;
+  }
+}
+
+const prepareHierarchy = (uri: vscode.Uri, at: vscode.Position) =>
+  vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", uri, at).then(
+    (r) => r ?? [],
+    () => [],
+  );
+
+const typesAt = (uri: vscode.Uri, at: vscode.Position) => inHierarchy(() => prepareHierarchy(uri, at));
+
+/** The base types of the type named at uri:at. */
+const supertypesAt = (uri: vscode.Uri, at: vscode.Position) =>
+  inHierarchy(async () => {
+    const bases: vscode.TypeHierarchyItem[] = [];
+    for (const item of await prepareHierarchy(uri, at)) {
+      bases.push(
+        ...(await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.provideSupertypes", item).then(
+          (r) => r ?? [],
+          () => [],
+        )),
+      );
+    }
+    return bases;
+  });
+
 /** Decided from a token alone, without asking the language server. */
 const isCheap = (c: Condition): boolean =>
   c.kind === "selector" || c.kind === "text" || c.kind === "const" || c.kind === "language" || c.kind === "server" ||
@@ -477,10 +520,7 @@ class DocData {
     this.probedHierarchy = true;
     const t = this.tokens.find((t) => t.chain.some((c) => TYPE_TOKENS.includes(c)) && this.declares(t));
     if (!t) return;
-    const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
-      (r) => r ?? [],
-      () => [],
-    );
+    const items = await typesAt(this.doc.uri, t.range.start);
     this.support.report(language, "typeHierarchy", items.length > 0, fileName(this.doc.uri));
   }
 
@@ -576,7 +616,7 @@ class DocData {
         );
       const [definitions, types] = await Promise.all([
         ask<vscode.Location | vscode.LocationLink>("vscode.executeDefinitionProvider"),
-        t.chain.some((c) => TYPE_TOKENS.includes(c)) ? ask<vscode.TypeHierarchyItem>("vscode.prepareTypeHierarchy") : [],
+        t.chain.some((c) => TYPE_TOKENS.includes(c)) ? typesAt(this.doc.uri, t.range.start) : [],
       ]);
       // Also the answer from() needs; it won't ask again.
       if (!this.locating.has(t.text)) {
@@ -697,12 +737,8 @@ class DocData {
   }
 
   /** Whether a type token's type has a base type whose name token meets inner. */
-  private async inheritsAt(t: Token, inner: Condition): Promise<boolean> {
-    const items = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.prepareTypeHierarchy", this.doc.uri, t.range.start).then(
-      (r) => r ?? [],
-      () => [],
-    );
-    return this.anyBase(items, inner);
+  private inheritsAt(t: Token, inner: Condition): Promise<boolean> {
+    return this.anyBase(this.doc.uri, t.range.start, inner);
   }
 
   /** c as it is in this document: see fold(). */
@@ -862,17 +898,13 @@ class DocData {
     return names;
   }
 
-  private async anyBase(start: vscode.TypeHierarchyItem[], inner: Condition): Promise<boolean> {
+  private async anyBase(uri: vscode.Uri, at: vscode.Position, inner: Condition): Promise<boolean> {
     const seen = new Set<string>();
-    let level = start;
+    let level = [{ uri, at }];
     for (let depth = 0; depth < MAX_DEPTH && level.length; depth++) {
-      const next: vscode.TypeHierarchyItem[] = [];
-      for (const item of level) {
-        const bases = await vscode.commands.executeCommand<vscode.TypeHierarchyItem[]>("vscode.provideSupertypes", item).then(
-          (r) => r ?? [],
-          () => [],
-        );
-        for (const base of bases) {
+      const next: typeof level = [];
+      for (const type of level) {
+        for (const base of await supertypesAt(type.uri, type.at)) {
           const key = `${base.uri.toString()}#${base.selectionRange.start.line}:${base.selectionRange.start.character}`;
           if (seen.has(key)) continue;
           seen.add(key);
@@ -883,7 +915,7 @@ class DocData {
             await data.prepare(inner, [name]);
             if (data.test(inner, name)) return true;
           }
-          next.push(base);
+          next.push({ uri: base.uri, at: base.selectionRange.start });
         }
       }
       level = next;
