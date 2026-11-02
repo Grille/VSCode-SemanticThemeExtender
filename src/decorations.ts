@@ -10,11 +10,12 @@
 // In a document on screen, a token whose definition is in another workspace file also takes over
 // the custom modifiers that definition got there, and contains() is answered for it there.
 // doc() matches the prose of a token's hover, signature() its code blocks; hovers are asked for in
-// that same second pass.
+// that same second pass. from() asks where names are defined (go to definition), right away like
+// inherits(), for the tokens the rest of the rule lets through.
 
 import { AsyncLocalStorage } from "async_hooks";
 import * as vscode from "vscode";
-import { conditionText, patternToRegExp, TokenCondition } from "./cfg";
+import { conditionText, fileMatcher, patternToRegExp, TokenCondition } from "./cfg";
 import { MessageRule, StyleValue, TagRule, TextRule } from "./engine";
 import { featureOf, serversFor, Support, unsupportedText } from "./support";
 import { parseSelector, TokenRegistry } from "./theme";
@@ -45,6 +46,8 @@ type Condition =
   | { kind: "language" | "server"; ids: string[] }
   /** Several patterns mean any of them. */
   | { kind: "text" | "doc" | "signature"; tests: RegExp[] }
+  /** Tests for the path of the file a name is defined in. */
+  | { kind: "from"; files: ((path: string) => boolean)[] }
   | { kind: "selector"; matcher: Matcher }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Condition }
   | { kind: "not"; operand: Condition }
@@ -259,6 +262,8 @@ function compileCondition(c: TokenCondition): Condition {
     case "signature":
       // Hovers span lines and nobody remembers their capitalization; regular expressions say for themselves.
       return { kind: c.kind, tests: c.patterns.map((p) => patternToRegExp(p, "is")) };
+    case "from":
+      return { kind: "from", files: c.patterns.map(fileMatcher) };
     case "selector": {
       const { type, modifiers, language } = parseSelector(c.selector);
       return { kind: "selector", matcher: { type, modifiers, language } };
@@ -278,7 +283,7 @@ function compileCondition(c: TokenCondition): Condition {
 /**
  * How specific a rule is, ranked like VS Code ranks semantic rules: a token type beats *, then more
  * modifiers, then a language; after that, an exact text beats a wildcard text, and each symbol
- * condition (contains, within, inherits) adds a little. Only conditions that must hold count (not
+ * condition (contains, within, inherits, from, ...) adds a little. Only conditions that must hold count (not
  * those under ! or |). Equally specific rules fall back to file order.
  */
 function specificity(when: TokenCondition): number {
@@ -295,7 +300,7 @@ function specificity(when: TokenCondition): number {
       language ||= !!s.language;
     } else if (c.kind === "language" || c.kind === "server") language = true;
     else if (c.kind === "text") text = Math.max(text, c.patterns.some((p) => typeof p !== "string" || p.includes("*")) ? 1 : 2);
-    else if (["contains", "within", "inherits", "decorated", "doc", "signature"].includes(c.kind)) symbols++;
+    else if (["contains", "within", "inherits", "decorated", "doc", "signature", "from"].includes(c.kind)) symbols++;
     else if (c.kind === "and") {
       walk(c.left);
       walk(c.right);
@@ -376,6 +381,8 @@ function kindsOf(c: Condition, out: Set<Exclude<Condition["kind"], "const">>) {
 
 const fileName = (uri: vscode.Uri) => uri.path.slice(uri.path.lastIndexOf("/") + 1);
 
+const targetOf = (d: vscode.Location | vscode.LocationLink) => ("targetUri" in d ? d.targetUri : d.uri);
+
 /** Runs f over items, a few at a time. */
 async function inBatches<T>(items: T[], f: (x: T) => Promise<void>) {
   for (let i = 0; i < items.length; i += PARALLEL) await Promise.all(items.slice(i, i + PARALLEL).map(f));
@@ -413,6 +420,11 @@ class DocData {
   private definitions = new Map<string, { data: DocData; token: Token }[]>();
   /** Hover text by token text, for doc() and signature(). */
   private hovers = new Map<string, HoverText>();
+  /** from(): the paths of the files each name is defined in, by token text, and the lookups on the way. */
+  private files = new Map<string, string[]>();
+  private locating = new Map<string, Promise<void>>();
+  private located = 0;
+  private declaredNames?: Set<string>;
   /** Set in the second pass of a document on screen: from then on doc() asks about every name. */
   private allDocs = false;
   /** True once definitions in other files are looked up. */
@@ -537,6 +549,11 @@ class DocData {
         ask<vscode.Location | vscode.LocationLink>("vscode.executeDefinitionProvider"),
         t.chain.some((c) => TYPE_TOKENS.includes(c)) ? ask<vscode.TypeHierarchyItem>("vscode.prepareTypeHierarchy") : [],
       ]);
+      // Also the answer from() needs; it won't ask again.
+      if (!this.locating.has(t.text)) {
+        this.files.set(t.text, definitions.map((d) => targetOf(d).path));
+        this.locating.set(t.text, Promise.resolve());
+      }
       const targets = [
         ...definitions.map((d) => ("targetUri" in d ? { uri: d.targetUri, range: d.targetSelectionRange ?? d.targetRange } : { uri: d.uri, range: d.range })),
         ...types.map((i) => ({ uri: i.uri, range: i.selectionRange })),
@@ -606,6 +623,42 @@ class DocData {
   }
 
   /**
+   * For from(): where these tokens' names are defined, asked once per name. A name declared here is
+   * defined here, without asking (matched by text, like contains()): also a base type's name in its
+   * own file, for inherits(from(...)).
+   */
+  private async locate(tokens: Token[]) {
+    const here = (this.declaredNames ??= new Set(this.tokens.filter((t) => this.declares(t)).map((t) => t.text)));
+    const seen = new Set<string>();
+    const todo = tokens.filter((t) => !this.locating.has(t.text) && !seen.has(t.text) && seen.add(t.text));
+    const ask: Token[] = [];
+    for (const t of todo) {
+      if (here.has(t.text)) {
+        this.files.set(t.text, [this.doc.uri.path]);
+        this.locating.set(t.text, Promise.resolve());
+      } else if (this.located < MAX_REFS) {
+        this.located++;
+        ask.push(t);
+      }
+    }
+    if (ask.length) {
+      const start = Date.now();
+      const run = inBatches(ask, async (t) => {
+        const definitions = await vscode.commands
+          .executeCommand<(vscode.Location | vscode.LocationLink)[]>("vscode.executeDefinitionProvider", this.doc.uri, t.range.start)
+          .then(
+            (r) => r ?? [],
+            () => [],
+          );
+        this.files.set(t.text, definitions.map((d) => targetOf(d).path));
+      });
+      for (const t of ask) this.locating.set(t.text, run);
+      run.then(() => ask.length > 1 && this.log(`${fileName(this.doc.uri)}: ${ask.length} definitions for from() in ${Date.now() - start} ms`));
+    }
+    await Promise.all(new Set(tokens.map((t) => this.locating.get(t.text)).filter((p): p is Promise<void> => !!p)));
+  }
+
+  /**
    * Answers the type hierarchy and documentation parts of c ahead of time, so test() can stay
    * synchronous. doc() needs hovers: for scope only (a base type's name), or, once this document is
    * on screen and past its first pass, for every name.
@@ -641,6 +694,8 @@ class DocData {
         if (scope) await this.fetchDocs(scope);
         else if (this.allDocs) await this.fetchDocs(among ?? this.tokens);
         return;
+      case "from":
+        return this.locate(scope ?? among ?? this.tokens);
       case "inherits": {
         await this.probeHierarchy();
         await this.prepare(c.inner);
@@ -703,6 +758,8 @@ class DocData {
         return c.tests.some((r) => r.test(this.hovers.get(t.text)?.prose ?? ""));
       case "signature":
         return c.tests.some((r) => r.test(this.hovers.get(t.text)?.code ?? ""));
+      case "from":
+        return (this.files.get(t.text) ?? []).some((path) => c.files.some((f) => f(path)));
       case "selector":
         return selects(c.matcher, t, this.doc.languageId);
       case "contains":

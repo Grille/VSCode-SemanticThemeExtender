@@ -9,9 +9,12 @@
 //                                      in a comment on the token's line or above silences only it
 //   patterns: "*Light*" is a glob (* matches anything, the whole text must match); /^Dark/i is a
 //                                      regular expression (found anywhere unless anchored), for text,
-//                                      doc, signature and $theme
+//                                      doc, signature, from and $theme
 //   doc("*deprecated*")                in a head: tokens whose hover documentation matches
 //   signature("*: Callable*")          in a head: tokens whose hover code (signature, type) matches
+//   from("typing")                     in a head: tokens whose definition is in a matching file: a
+//                                      glob without / names the file, with or without its extension;
+//                                      otherwise the whole path
 //   @name => head                      a named selector expression, used as @name in heads:
 //                                      @slots => contains(text("__slots__") variable.classMember)
 //                                      @slots class = ...; top level only, assigned once, usable anywhere
@@ -184,8 +187,8 @@ export type Cond =
   | { kind: "selector"; selector: string; range: Range }
   /** language(python), server(ms-python.vscode-pylance): the document's language, or its language server's extension. */
   | { kind: "language" | "server"; ids: string[]; range: Range }
-  /** text: the token's own text; doc / signature: the prose / the code of its hover. */
-  | { kind: "text" | "doc" | "signature"; patterns: TextPattern[]; range: Range }
+  /** text: the token's own text; doc / signature: the prose / the code of its hover; from: the file its definition is in. */
+  | { kind: "text" | "doc" | "signature" | "from"; patterns: TextPattern[]; range: Range }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Cond; range: Range }
   /** theme("*Light*") and dark, light, contrast: the active theme, decided when the rules are applied. */
   | { kind: "theme"; patterns: TextPattern[]; range: Range }
@@ -198,7 +201,7 @@ export type Cond =
 export type TokenCondition =
   | { kind: "selector"; selector: string }
   | { kind: "language" | "server"; ids: string[] }
-  | { kind: "text" | "doc" | "signature"; patterns: TextPattern[] }
+  | { kind: "text" | "doc" | "signature" | "from"; patterns: TextPattern[] }
   | { kind: "contains" | "within" | "inherits" | "decorated"; inner: TokenCondition }
   | { kind: "not"; operand: TokenCondition }
   | { kind: "and" | "or"; left: TokenCondition; right: TokenCondition };
@@ -214,6 +217,7 @@ export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]
     case "text":
     case "doc":
     case "signature":
+    case "from":
       return `${c.kind}(${c.patterns.map(patternText).join(", ")})`;
     case "contains":
     case "within":
@@ -244,6 +248,7 @@ export function stripCondition(c: Cond): TokenCondition {
     case "text":
     case "doc":
     case "signature":
+    case "from":
       return { kind: c.kind, patterns: c.patterns };
     case "contains":
     case "within":
@@ -298,6 +303,26 @@ export const patternText = (p: TextPattern) => (typeof p === "string" ? `"${p}"`
 
 /** globFlags apply to globs only; a regular expression has the flags it was written with. */
 export const patternToRegExp = (p: TextPattern, globFlags = "") => (typeof p === "string" ? globToRegExp(p, globFlags) : new RegExp(p.regex, p.flags));
+
+/**
+ * from(): a test for the path of the file a definition is in. A glob without / names the file,
+ * with or without its extensions: "typing" matches typing.pyi, "lib.es5" lib.es5.d.ts. A glob with
+ * / and a regular expression match the whole path, written with /. Globs ignore case, as file
+ * names on Windows and macOS do.
+ */
+export function fileMatcher(p: TextPattern): (path: string) => boolean {
+  const r = patternToRegExp(p, "i");
+  if (typeof p !== "string" || p.includes("/")) return (path) => r.test(path);
+  return (path) => {
+    let name = path.slice(path.lastIndexOf("/") + 1);
+    for (;;) {
+      if (r.test(name)) return true;
+      const dot = name.lastIndexOf(".");
+      if (dot <= 0) return false;
+      name = name.slice(0, dot);
+    }
+  };
+}
 
 export type Flag = "dark" | "light" | "contrast";
 export const FLAGS: Flag[] = ["dark", "light", "contrast"];
@@ -604,8 +629,9 @@ export function parseRulesFile(text: string): RulesFile {
       text: 'the token text in quotes or a /regex/, e.g. text("__slots__")',
       doc: 'a pattern for the documentation in quotes or a /regex/, e.g. doc("*deprecated*")',
       signature: 'a pattern for the signature in quotes or a /regex/, e.g. signature(/: int\\b/)',
+      from: 'a file name or path in quotes or a /regex/, e.g. from("typing")',
     };
-    for (const kind of ["text", "doc", "signature"] as const) {
+    for (const kind of ["text", "doc", "signature", "from"] as const) {
       if (!call(kind)) continue;
       next();
       next();
@@ -654,7 +680,7 @@ export function parseRulesFile(text: string): RulesFile {
       }
       return { kind: "selector", selector: t.text, range: t.range };
     }
-    return fail("Expected a selector, text(...), doc(...), signature(...), language(...), server(...), theme(...), dark, light, contrast, contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
+    return fail("Expected a selector, text(...), doc(...), signature(...), from(...), language(...), server(...), theme(...), dark, light, contrast, contains(...), within(...), inherits(...), decorated(...), @expression, '!' or '('");
   }
 
   // ---- color expressions
@@ -702,7 +728,7 @@ export function parseRulesFile(text: string): RulesFile {
         if (t.text === "style") fail("style() must wrap the whole value, e.g. style(mix(class, function), bold)", t);
         if (!FUNCTION_NAMES.has(t.text)) {
           const flagNext = peek(1) && (isPunct(peek(1), "!") || (peek(1).type === "ident" && STYLE_NAMES.has(peek(1).text)));
-          if (["text", "doc", "signature", "language", "server", "contains", "within", "inherits", "decorated"].includes(t.text)) {
+          if (["text", "doc", "signature", "from", "language", "server", "contains", "within", "inherits", "decorated"].includes(t.text)) {
             fail(`${t.text}(...) is part of a selector expression, not a color; name one with @name => ${t.text}(...)`, t);
           }
           fail(`Unknown function '${t.text}'${flagNext ? `. For font styles write style(${t.text}, ...)` : ""}`, t);
@@ -1150,7 +1176,9 @@ export const DEFAULT_RULES = `; Semantic Theme Extender rules. Save (Ctrl+S) to 
 ;                            warn(name, "...") can be silenced by name: # semantic-theme: ignore name
 ;   doc("*deprecated*") x    only tokens whose documentation (hover, without code) matches
 ;   signature("*: int") x    only tokens whose signature or type (the hover's code) matches
-;   "*Light*" is a glob, /^Dark/i a regular expression; both work in text, doc, signature, $theme
+;   from("typing") x         only tokens defined in a matching file: typing.py, typing.pyi;
+;                            with a / the whole path: from("*/node_modules/react/*")
+;   "*Light*" is a glob, /^Dark/i a regular expression; both work in text, doc, signature, from, theme
 ;   @name => head            a named selector expression, used in heads: @name class = ...
 ;
 ;   class, function, ...     the active theme's color for a semantic token type

@@ -211,6 +211,31 @@ Signatures are written differently per language: Pylance writes `(variable) hand
 Callable[[int], str]` or `(function) def f(a: int) -> str`, C# `int Foo.Bar(string s)`. So
 patterns are per language; `*: int` and `*-> None` avoid matching `Point` or `-> Optional[int]`.
 
+Rust's hovers start with the module path (`core::fmt::macros`) and C#'s name the namespace
+(`System.Func<…>`), so `signature("core::*")` or `signature("*System.Collections.*")` match by
+where a name comes from.
+
+### from
+
+```ini
+from("typing") = …
+from("*/site-packages/numpy/*") class = …
+from("*/node_modules/react/*") function = …
+```
+
+Only tokens defined in a matching file, as go to definition finds it: for names from a module,
+library or package whose hovers don't say where they come from, as in Python and TypeScript. A
+glob without `/` names the file, with or without its extensions: `"typing"` matches `typing.py`
+and typeshed's `typing.pyi`, `"lib.es5"` matches `lib.es5.d.ts`. A glob with `/`, or a regular
+expression, matches the whole path, written with `/`. Globs ignore case.
+
+Definitions are asked for once per name, only for tokens the rest of the rule lets through; a
+name declared in the same file is defined there without asking. So
+`inherits(from("builtins")) class` means subclasses of Python's builtin types.
+
+C# leads to a decompiled file named after the type, which doesn't say its namespace or assembly;
+use `signature` there.
+
 ### Unsupported conditions
 
 Some conditions need more from the language server than tokens: `inherits` a type hierarchy,
@@ -228,11 +253,12 @@ edit; `contains`, `decorated` and `within` match nothing there until then.
 
 ### Patterns
 
-Wherever a pattern is taken (`text`, `doc`, `signature`, `theme`, `match($theme)`), it is either:
+Wherever a pattern is taken (`text`, `doc`, `signature`, `from`, `theme`, `match($theme)`), it is
+either:
 
 - a quoted glob, where `*` matches anything and the whole text must match: `"*Light*"`. In
-  `text` it is case-sensitive; for a language that isn't, use `/^name$/i`. `doc`, `signature`
-  and theme names ignore case.
+  `text` it is case-sensitive; for a language that isn't, use `/^name$/i`. `doc`, `signature`,
+  `from` and theme names ignore case.
 - a regular expression literal, for advanced cases: `/^Dark/i`, `signature(/: int\b/)`,
   `text(/^_[a-z]/)`. It's found anywhere unless anchored with `^` / `$`, and takes its flags as
   written (`i` for any case). Invalid ones are reported as you type.

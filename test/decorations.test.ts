@@ -167,6 +167,22 @@ describe("symbol conditions", () => {
     assert.deepEqual(colors(main), { "#AA0000": ["1:Child", "2:GrandChild", "2:Child", "8:GrandChild", "11:Sub", "12:SubKeep"] });
   });
 
+  it("from: where names are defined, also outside the workspace, asked once per name", async () => {
+    const files = project();
+    // base.py is a library now.
+    world.folders = [];
+    show(files.main);
+    d = decorator(['from("base") class = #AA0000', 'from("*/proj/main.py") class.declaration = #00AA00', "from(/main\\.py$/) class & !class.declaration = #0000AA"]);
+    await settle(120);
+    assert.deepEqual(colors(files.main), {
+      "#AA0000": ["0:Slotted", "1:Slotted"],
+      "#00AA00": ["1:Child", "2:GrandChild", "3:Plain", "4:Ctx", "9:Local", "11:Sub", "12:SubKeep"],
+      "#0000AA": ["2:Child", "8:GrandChild", "11:Local", "12:Local"],
+    });
+    // Only Slotted: the other classes are declared in main.py, and nothing else is a class.
+    assert.equal(world.requests.definition, 1);
+  });
+
   it("decorated: works whether or not the symbol range includes the decorators", async () => {
     for (const includes of [true, false]) {
       reset();

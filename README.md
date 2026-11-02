@@ -10,7 +10,7 @@ defines alone.
 
 It goes further than token types, too: rules can color tokens by what the language server knows
 about them. Subclasses of a certain base, classes with a certain decorator, functions whose docs
-say *deprecated*. Rules can also put warnings on code.
+say *deprecated*, names from Python's `typing`. Rules can also put warnings on code.
 
 ## Rules
 
@@ -34,6 +34,7 @@ dark & contrast { enum = style(class, bold) }
 inherits(text("Exception")) class = style(class, italic)
 decorated(text("dataclass")) class = struct
 doc("*deprecated*") function = style(function, strikethrough)
+from("typing") = soften(class, 20%)
 
 ; warnings on code
 text("print") function := hint(debug-output, "left-over print")
@@ -47,7 +48,7 @@ A workspace can have its own rules in `.vscode/semantic-theme.str`, committed wi
 what its tokens *are* (`class += slotted`), while your global rules say how that looks.
 
 **[The rules language](docs/rules.md)** describes everything: selectors, conditions such as
-`contains`, `inherits` and `doc`, custom modifiers, messages, color functions, matching themes
+`contains`, `inherits`, `doc` and `from`, custom modifiers, messages, color functions, matching themes
 and project rules.
 
 ## Commands

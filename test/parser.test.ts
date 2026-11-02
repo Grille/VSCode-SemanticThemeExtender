@@ -1,7 +1,7 @@
 import "./fake-vscode";
 import { strict as assert } from "assert";
 import { describe, it } from "node:test";
-import { conditionText, parseRulesFile, Rule, stripCondition } from "../src/cfg";
+import { conditionText, fileMatcher, parseRulesFile, Rule, stripCondition } from "../src/cfg";
 
 const parse = (lines: string[]) => parseRulesFile(lines.join("\n"));
 const problems = (lines: string[]) => parse(lines).problems.map((p) => `${p.range.start.line + 1}: ${p.message}`);
@@ -97,6 +97,20 @@ describe("patterns", () => {
     ]);
   });
 
+  it("from() names a file with or without its extensions, or with a / the whole path", () => {
+    const f = parse(['from("typing", /\\/numpy\\//) class = #111111']);
+    assert.deepEqual(f.problems, []);
+    assert.equal(conditionText(stripCondition((f.stmts[0] as Rule).head)), 'from("typing", /\\/numpy\\//) class');
+    const matches = (p: string | { regex: string; flags: string }, paths: string[]) => paths.filter(fileMatcher(p));
+    const paths = ["/c:/Python314/Lib/typing.py", "/stdlib/typing.pyi", "/lib/typing_extensions.pyi", "/ts/lib.es5.d.ts", "/site-packages/numpy/core.py", "/c:/Lib/Typing.py"];
+    assert.deepEqual(matches("typing", paths), ["/c:/Python314/Lib/typing.py", "/stdlib/typing.pyi", "/c:/Lib/Typing.py"]);
+    assert.deepEqual(matches("typing.pyi", paths), ["/stdlib/typing.pyi"]);
+    assert.deepEqual(matches("lib.es5", paths), ["/ts/lib.es5.d.ts"]);
+    assert.deepEqual(matches("typing*", paths), ["/c:/Python314/Lib/typing.py", "/stdlib/typing.pyi", "/lib/typing_extensions.pyi", "/c:/Lib/Typing.py"]);
+    assert.deepEqual(matches("*/site-packages/numpy/*", paths), ["/site-packages/numpy/core.py"]);
+    // A regular expression is found anywhere in the path, with its own flags.
+    assert.deepEqual(matches({ regex: "/Lib/typing\\.py$", flags: "" }, paths), ["/c:/Python314/Lib/typing.py"]);
+  });
 });
 
 describe("statements", () => {

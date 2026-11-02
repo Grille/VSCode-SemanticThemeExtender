@@ -58,6 +58,15 @@ describe("Python, with Pylance", () => {
       main = await open("python/main.py");
     });
 
+    it("from(): typing's helpers, by the file they're defined in", async () => {
+      // Pylance's hovers don't say; go to definition leads to Lib/typing.py or a typeshed typing.pyi.
+      await setRules('from("typing") = #AA5500', 'from("builtins") class = #0055AA');
+      await eventually(async () => assert.equal(await drawnColor(main, 27, "Callable"), "#AA5500"));
+      assert.equal(await drawnColor(main, 1, "Callable"), "#AA5500");
+      assert.equal(await drawnColor(main, 18, "dataclass"), undefined);
+      assert.equal(await drawnColor(main, 35, "tuple"), "#0055AA");
+    });
+
     it("custom modifiers from project rules reach other files", async () => {
       await setProjectRules("python", 'contains(text("__slots__") variable.classMember) class += slotted');
       await setRules("class.slotted = #00AA00");
