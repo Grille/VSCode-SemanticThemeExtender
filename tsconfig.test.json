@@ -2,6 +2,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": ".",
+    "types": ["node", "mocha"],
     "outDir": "out-test"
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]
