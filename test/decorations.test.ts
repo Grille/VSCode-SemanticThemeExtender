@@ -338,6 +338,41 @@ describe("custom modifiers", () => {
     // builtins.pyi is outside the workspace: its tuple only became a struct through these rules.
     assert.deepEqual(messages(main), ["0:Lost"]);
   });
+
+  it("a file loaded for another one is tagged only where asked, e.g. stubs with many classes", async () => {
+    world.folders = [{ uri: Uri.parse("file:///proj"), name: "proj", index: 0 }];
+    const N = 50;
+    const lines = ["class Root: ...", ...Array.from({ length: N }, (_, i) => `class C${i}(Root): ...`)];
+    const stubs = addFile("file:///proj/stubs.pyi", {
+      lines,
+      tokens: lines.flatMap((l, line) => [
+        { line, text: l.split(/[ (:]/)[1], type: "class", modifiers: ["declaration"] },
+        ...(line ? [{ line, text: "Root", type: "class" }] : []),
+      ]),
+      symbols: lines.map((l, line) => ({ name: l.split(/[ (:]/)[1], kind: K.Class, from: line, to: line, nameLine: line })),
+    });
+    const main = addFile("file:///proj/main.py", {
+      lines: ["class Mine(C0): pass"],
+      tokens: [
+        { line: 0, text: "Mine", type: "class", modifiers: ["declaration"] },
+        { line: 0, text: "C0", type: "class" },
+      ],
+      symbols: [{ name: "Mine", kind: K.Class, from: 0, to: 0, nameLine: 0 }],
+    });
+    world.declared.set("Mine", { uri: main.uri.toString(), line: 0 });
+    world.declared.set("Root", { uri: stubs.uri.toString(), line: 0 });
+    for (let i = 0; i < N; i++) {
+      world.declared.set(`C${i}`, { uri: stubs.uri.toString(), line: i + 1 });
+      world.bases.set(`C${i}`, ["Root"]);
+    }
+    world.bases.set("Mine", ["C0"]);
+    show(main);
+    d = decorator(['inherits(text("Root")) class += rooted', "class.rooted = #AA0000"]);
+    await settle(120);
+    assert.deepEqual(colors(main), { "#AA0000": ["0:Mine", "0:C0"] });
+    // Mine and C0 walked up, not the other 49 classes of stubs.pyi.
+    assert.ok(world.requests.typeHierarchy < 20, `${world.requests.typeHierarchy} type hierarchy requests`);
+  });
 });
 
 describe("Inspect Token", () => {

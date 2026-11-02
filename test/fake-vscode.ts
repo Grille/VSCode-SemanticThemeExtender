@@ -10,8 +10,14 @@ export class Position {
   isBefore(o: Position) {
     return this.line < o.line || (this.line === o.line && this.character < o.character);
   }
+  isAfter(o: Position) {
+    return o.isBefore(this);
+  }
   isEqual(o: Position) {
     return this.line === o.line && this.character === o.character;
+  }
+  compareTo(o: Position) {
+    return this.line - o.line || this.character - o.character;
   }
 }
 
@@ -65,6 +71,7 @@ export interface FakeDoc {
   languageId: string;
   version: number;
   lines: string[];
+  lineCount: number;
   getText(r?: Range): string;
   lineAt(l: number): { text: string; lineNumber: number; firstNonWhitespaceCharacterIndex: number };
   positionAt(o: number): Position;
@@ -164,6 +171,9 @@ function makeDoc(uri: Uri, lines: string[], languageId: string): FakeDoc {
     languageId,
     version: 1,
     lines,
+    get lineCount() {
+      return lines.length;
+    },
     isDirty: false,
     getText(r?: Range) {
       if (!r) return lines.join("\n");

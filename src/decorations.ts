@@ -320,7 +320,6 @@ function specificity(when: TokenCondition): number {
 const selects = (m: Matcher, t: Token, language: string) =>
   (m.type === "*" || t.chain.includes(m.type)) && m.modifiers.every((x) => t.modifiers.includes(x)) && (!m.language || m.language === language);
 
-const inside = (inner: vscode.Range, outer: vscode.Range) => outer.contains(inner) && !outer.isEqual(inner);
 
 const needsSymbols = (c: Condition): boolean =>
   c.kind === "contains" || c.kind === "within" || c.kind === "inherits" || c.kind === "decorated" ||
@@ -374,6 +373,26 @@ const taggingChain = new AsyncLocalStorage<Set<DocData>>();
 // How long to wait for a document another chain is tagging.
 const CROSS_WAIT_MS = 2000;
 type Log = (line: string) => void;
+
+/** Whether c selects any of these modifiers somewhere. */
+function selectsAny(c: Condition, modifiers: Set<string>): boolean {
+  switch (c.kind) {
+    case "selector":
+      return c.matcher.modifiers.some((m) => modifiers.has(m));
+    case "contains":
+    case "within":
+    case "inherits":
+    case "decorated":
+      return selectsAny(c.inner, modifiers);
+    case "not":
+      return selectsAny(c.operand, modifiers);
+    case "and":
+    case "or":
+      return selectsAny(c.left, modifiers) || selectsAny(c.right, modifiers);
+    default:
+      return false;
+  }
+}
 
 /** Every kind of atom in c. */
 function kindsOf(c: Condition, out: Set<Exclude<Condition["kind"], "const">>) {
@@ -488,6 +507,7 @@ class DocData {
   private declared = new Set<string>();
   private probedHierarchy = false;
   private folded = new Map<Condition, Condition>();
+  private index?: { parent: Map<Sym, Sym>; innermost: Map<Token, Sym>; starting: Map<number, Sym[]> };
 
   constructor(
     readonly doc: vscode.TextDocument,
@@ -595,7 +615,9 @@ class DocData {
       const uri = targetOf(d);
       const data = uri.toString() === this.doc.uri.toString() ? this : await this.load(uri);
       const token = data?.tokenAt("targetUri" in d ? (d.targetSelectionRange ?? d.targetRange) : d.range);
-      if (data && token && token !== t) this.aliases.set(t.text, { data, token });
+      if (!data || !token || token === t) return;
+      if (data !== this) await data.ensureTagsOn([token]);
+      this.aliases.set(t.text, { data, token });
     });
   }
 
@@ -617,25 +639,36 @@ class DocData {
   }
 
   /**
-   * Gives these tokens their custom modifiers. In a library file only these, when first asked about:
-   * such files are large (builtins.pyi), and only a base type's name in them matters. Its
-   * contains() and within() still look at the whole file, without the custom modifiers of the rest.
+   * Gives these tokens their custom modifiers, for a document loaded on behalf of another one (a
+   * base type's file, a definition's): only these, when first asked about. Such files can be large
+   * (builtins.pyi, a library's stubs in the workspace), and only a name or two in them matters.
+   * Their contains() and within() still look at the whole file, without the custom modifiers of the
+   * rest. A document on screen is tagged whole (ensureTags()), and then that is waited for.
    */
   async ensureTagsOn(tokens: Token[]): Promise<void> {
-    if (!this.library) return this.ensureTags();
+    if (this.tagging && !this.library) return this.ensureTags();
+    const chain = taggingChain.getStore();
     const todo = tokens.filter((t) => !this.tokenTagging.has(t));
     if (todo.length) {
-      const run = this.tagOnly(todo);
+      const run = taggingChain.run(new Set(chain).add(this), () => this.tagOnly(todo));
       for (const t of todo) this.tokenTagging.set(t, run);
     }
-    await Promise.all(tokens.map((t) => this.tokenTagging.get(t)));
+    // Tokens this chain of calls is already tagging (a walk that came back here) are used as they are.
+    const wait = chain?.has(this) ? todo : tokens;
+    await Promise.all(wait.map((t) => this.tokenTagging.get(t)));
   }
 
   private async tagOnly(tokens: Token[]) {
+    await this.resolveAliases();
+    // An alias's type declared here is tagged along, to pass its modifiers on.
+    const types = tokens.map((t) => this.aliases.get(t.text)).flatMap((a) => (a?.data === this ? [a.token] : []));
+    const these = [...new Set([...tokens, ...types])];
+    this.followAliases();
     for (const tag of this.tags) {
       // inherits(), doc() and from() ask the language server about these tokens alone.
-      await this.prepareFolded(this.simplified(tag.when), tokens, tokens);
-      for (const t of tokens) if (this.test(tag.when, t)) this.give(t, tag.modifiers, tag.source);
+      await this.prepareFolded(this.simplified(tag.when), these, these);
+      for (const t of these) if (this.test(tag.when, t)) this.give(t, tag.modifiers, tag.source);
+      this.followAliases();
       this.owners.clear();
     }
   }
@@ -692,6 +725,7 @@ class DocData {
         const data = await this.load(uri);
         const name = data?.tokenAt(range);
         if (!data || !name) continue;
+        await data.ensureTagsOn([name]);
         this.definitions.set(t.text, [...(this.definitions.get(t.text) ?? []), { data, token: name }]);
         for (const m of name.modifiers) {
           if (!this.custom.has(m)) continue;
@@ -728,7 +762,64 @@ class DocData {
 
   /** The token at the start of range, e.g. the name token of a symbol or a type hierarchy item. */
   tokenAt(range: vscode.Range): Token | undefined {
-    return this.tokens.find((t) => t.range.contains(range.start) && t.range.start.line === range.start.line);
+    // Tokens come in document order: the first one ending at or after the position, or the next.
+    const at = range.start;
+    let lo = 0;
+    let hi = this.tokens.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.tokens[mid].range.end.isBefore(at)) lo = mid + 1;
+      else hi = mid;
+    }
+    return this.tokens.slice(lo, lo + 2).find((t) => t.range.contains(at) && t.range.start.line === at.line);
+  }
+
+  /**
+   * Each token's innermost symbol and each symbol's parent, by their ranges, built once: large files
+   * (a library's stubs) have tens of thousands of each, too many to compare every pair.
+   */
+  private symbolIndex() {
+    if (this.index) return this.index;
+    // Outer symbols before the ones inside them: by start, the longer first.
+    const sorted = [...this.symbols].sort((a, b) => a.range.start.compareTo(b.range.start) || b.range.end.compareTo(a.range.end));
+    const parent = new Map<Sym, Sym>();
+    const stack: Sym[] = [];
+    for (const s of sorted) {
+      while (stack.length && !stack[stack.length - 1].range.contains(s.range)) stack.pop();
+      if (stack.length) parent.set(s, stack[stack.length - 1]);
+      stack.push(s);
+    }
+    // Inner symbols come later and take over their tokens.
+    const innermost = new Map<Token, Sym>();
+    for (const s of sorted) {
+      for (let i = this.firstAfter(s.range.start); i < this.tokens.length; i++) {
+        const t = this.tokens[i];
+        if (!s.range.end.isAfter(t.range.start)) break;
+        if (s.range.contains(t.range)) innermost.set(t, s);
+      }
+    }
+    // Symbols by the line they start on, for decorators above them.
+    const starting = new Map<number, Sym[]>();
+    for (const s of this.symbols) starting.set(s.range.start.line, [...(starting.get(s.range.start.line) ?? []), s]);
+    return (this.index = { parent, innermost, starting });
+  }
+
+  /** The index of the first token starting at or after the position. */
+  private firstAfter(at: vscode.Position): number {
+    let lo = 0;
+    let hi = this.tokens.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.tokens[mid].range.start.isBefore(at)) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** The symbols around a token, innermost first. */
+  private *around(t: Token): Generator<Sym> {
+    const { parent, innermost } = this.symbolIndex();
+    for (let s = innermost.get(t); s; s = parent.get(s)) yield s;
   }
 
   /** Hover prose for these tokens' names, asked once per name. */
@@ -849,7 +940,12 @@ class DocData {
         await this.prepare(c.inner);
         const elsewhere = new Set([...this.definitions.values(), ...[...this.aliases.values()].map((a) => [a])].flatMap((list) => list.map((d) => d.data)));
         elsewhere.delete(this);
-        for (const data of elsewhere) await data.prepare(c.inner);
+        // Files loaded for this one have custom modifiers only where asked; a condition on them needs them all.
+        const custom = selectsAny(c.inner, this.custom);
+        for (const data of elsewhere) {
+          if (custom) await data.ensureTags();
+          await data.prepare(c.inner);
+        }
         return;
       }
       case "within":
@@ -896,11 +992,12 @@ class DocData {
       case "decorated":
         return this.decoratedBy(c).has(t.text) || this.standsFor(t.text).some((d) => d.data.decoratedBy(c).has(d.token.text));
       case "within":
-        return this.symbols.some((s) => {
-          if (!s.range.contains(t.range) || s.nameRange?.contains(t.range)) return false;
+        for (const s of this.around(t)) {
+          if (s.nameRange?.contains(t.range)) continue;
           const name = this.names.get(s);
-          return !!name && this.test(c.inner, name);
-        });
+          if (name && this.test(c.inner, name)) return true;
+        }
+        return false;
       case "inherits":
         return this.ready.get(c)?.has(t.text) ?? false;
       case "not":
@@ -922,13 +1019,16 @@ class DocData {
     if (names) return names;
     names = new Set<string>();
     this.owners.set(inner, names);
-    const hits = this.tokens.filter((t) => this.test(inner, t));
-    for (const s of this.symbols) {
-      if (names.has(this.nameOf(s))) continue;
-      const nested = this.symbols.filter((o) => o !== s && SCOPES.has(o.kind) && inside(o.range, s.range));
-      // A nested method's or class's name is a member of s; only its inside is not.
-      const hidden = (t: Token) => nested.some((o) => o.range.contains(t.range) && !o.nameRange?.contains(t.range));
-      if (hits.some((t) => s.range.contains(t.range) && !hidden(t))) names.add(this.nameOf(s));
+    for (const t of this.tokens) {
+      if (!this.test(inner, t)) continue;
+      // The symbols around it up to the first scope it is inside of: a nested method's or class's
+      // name is a member of the symbol around it, its inside is not.
+      let scope: Sym | undefined;
+      for (const s of this.around(t)) {
+        if (scope && !s.range.isEqual(scope.range)) break;
+        names.add(this.nameOf(s));
+        if (SCOPES.has(s.kind) && !s.nameRange?.contains(t.range)) scope = s;
+      }
     }
     return names;
   }
@@ -950,14 +1050,16 @@ class DocData {
     if (names) return names;
     names = new Set<string>();
     this.owners.set(c, names);
-    for (const s of this.symbols) {
-      if (!s.nameRange || names.has(this.nameOf(s))) continue;
-      let first = s.range.start.line;
-      while (first > 0 && /^\s*(?:[@[]|#\[)/.test(this.doc.lineAt(first - 1).text)) first--;
-      const name = s.nameRange.start;
-      const header = (t: Token) =>
-        t.range.start.isBefore(name) && (s.range.contains(t.range) || (t.range.start.line >= first && t.range.start.line < s.range.start.line));
-      if (this.tokens.some((t) => header(t) && this.test(c.inner, t))) names.add(this.nameOf(s));
+    const { starting } = this.symbolIndex();
+    const decorator = (line: number) => line < this.doc.lineCount && /^\s*(?:[@[]|#\[)/.test(this.doc.lineAt(line).text);
+    for (const t of this.tokens) {
+      if (!this.test(c.inner, t)) continue;
+      // Symbols it's in, before their name; symbols right below the decorator lines it's on.
+      const before = (s: Sym) => !!s.nameRange && t.range.start.isBefore(s.nameRange.start);
+      for (const s of this.around(t)) if (before(s)) names.add(this.nameOf(s));
+      for (let line = t.range.start.line; decorator(line); line++) {
+        for (const s of starting.get(line + 1) ?? []) if (before(s)) names.add(this.nameOf(s));
+      }
     }
     return names;
   }
@@ -1126,6 +1228,7 @@ export class TokenDecorator implements vscode.Disposable {
         if (attempt < RETRIES) this.schedule(doc, attempt + 1, RETRY_MS);
         return;
       }
+      await data.ensureTags();
       for (const k of order) await data.prepare(this.rules[k].when);
       for (const m of messages) await data.prepare(m.when);
       // The document changed while this was computed; a newer refresh is on its way.
@@ -1166,10 +1269,11 @@ export class TokenDecorator implements vscode.Disposable {
   }
 
   /**
-   * Tokens (with custom modifiers) and symbols of a document, also one that isn't open (a base type's
-   * file). A file outside the workspace, a library's, gets the project rules of the document it's
-   * loaded for: builtins.pyi's tuple is a struct in a project that says so. projects names their
-   * folders, so it's analyzed once for each.
+   * Tokens and symbols of a document, also one that isn't open (a base type's file). Custom
+   * modifiers come on request: ensureTags() for a document on screen, ensureTagsOn() for the names
+   * asked about in one loaded for another. A file outside the workspace, a library's, gets the
+   * project rules of the document it's loaded for: builtins.pyi's tuple is a struct in a project
+   * that says so. projects names their folders, so it's analyzed once for each.
    */
   private load = async (uri: vscode.Uri, projects?: string): Promise<DocData | undefined> => {
     const doc = await vscode.workspace.openTextDocument(uri).then(
@@ -1185,9 +1289,7 @@ export class TokenDecorator implements vscode.Disposable {
       hit = { version: doc.version, data: this.analyze(doc, projects!, !own) };
       this.cache.set(key, hit);
     }
-    const data = await hit.data;
-    await data?.ensureTags();
-    return data;
+    return hit.data;
   };
 
   /** The folders whose project rules apply to a document, as a key. */

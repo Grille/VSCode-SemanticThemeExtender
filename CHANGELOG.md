@@ -27,7 +27,7 @@
 - Project rules in `.vscode/semantic-theme.ste`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
 - `inherits(…, 1)`: only so many levels up the type hierarchy, e.g. classes listing `Protocol` as a direct base.
 - Aliases (`LS = Outer.Sockets`) stand for their type: `inherits()`, `contains()`, `decorated()` and custom modifiers look at the type, found with go to type definition.
-- Project rules' custom modifiers reach library files outside the workspace that the project's files lead to (a base type in `builtins.pyi`); library files are tagged only where asked, so `inherits()` there stays fast.
+- Project rules' custom modifiers reach library files outside the workspace that the project's files lead to (a base type in `builtins.pyi`); files loaded for another file (a base type's, a definition's, a library's stubs) are tagged only where asked, so large ones stay fast.
 - `@name => head` names a selector expression for reuse in heads as `@name`.
 - `text()` and `contains()` conditions combine with `&`, `|`, `!` and parentheses.
 - Token text filters: `text("__slots__") variable.classMember = ...` colors only tokens with that text, as decorations over the language server's tokens.
