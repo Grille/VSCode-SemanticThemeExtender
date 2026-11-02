@@ -933,7 +933,17 @@ export function parseRulesFile(text: string): RulesFile {
         do {
           const m = peek();
           if (m?.type !== "ident" || !sameLine(tokens[i - 1], m) || !/^[A-Za-z_][\w-]*$/.test(m.text)) {
-            fail("Expected a modifier name like slotted", m && sameLine(tokens[i - 1], m) ? m : tokens[i - 1]);
+            const here = m && sameLine(tokens[i - 1], m) ? m : undefined;
+            // A modifier is a name like a token type's, the same as where rules select it (class.slotted).
+            const bare = here?.type === "string" && here.text.replace(/^"|"$/g, "");
+            fail(
+              bare && /^[A-Za-z_][\w-]*$/.test(bare)
+                ? `Modifier names are written without quotes: += ${bare}`
+                : here?.type === "var"
+                  ? "+= takes a modifier name, not a variable: the same name rules select it by, as in class.slotted"
+                  : "Expected a modifier name like slotted",
+              here ?? tokens[i - 1],
+            );
           }
           next();
           modifiers.push(m.text);

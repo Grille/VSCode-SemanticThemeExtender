@@ -246,6 +246,9 @@ class.leaky   = style(function, bold | italic)
 it, and any rule can select it: `class.slotted = …`, `inherits(class.slotted) class`, also in
 another rules file. Assignments run in order, global rules first, then the project's.
 
+The name is written bare, like a token type, not as `"slotted"` or a `$variable`: it is the same
+name rules select it by, and a selector like `class.slotted` can't hold a variable either.
+
 A name used in one file and defined in another workspace file gets the custom modifiers of its
 definition (asked of the language server's go to definition), a moment after the rest is drawn.
 

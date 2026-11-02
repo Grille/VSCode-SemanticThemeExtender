@@ -58,6 +58,13 @@ describe("+= and :=", () => {
     ]);
   });
 
+  it("say why a quoted name or a variable doesn't work there", () => {
+    assert.deepEqual(problems(['class += "slotted"', "class += $slotted"]), [
+      "1: Modifier names are written without quotes: += slotted",
+      "2: += takes a modifier name, not a variable: the same name rules select it by, as in class.slotted",
+    ]);
+  });
+
   it("messages take a severity, an optional name and a quoted message", () => {
     const f = parse(['class := warn(leaky-slots, "{text}")', 'class := hint("h")']);
     assert.deepEqual(f.problems, []);
