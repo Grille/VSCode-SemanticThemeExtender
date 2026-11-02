@@ -31,3 +31,7 @@ def handler(callback: Callable[[int], str]) -> None:
 
 
 x = GrandChild(1)
+
+
+class Pair(tuple):
+    pass

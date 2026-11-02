@@ -188,6 +188,11 @@ here subclasses of classes that define `__slots__`, also when the base lives in 
 library. Uses the language server's type hierarchy, so it appears a little later. Pylance and
 the C# extension provide one; TypeScript and rust-analyzer don't.
 
+The name token is the base type's declaration, with what the language server says about it
+there. Pylance marks builtins as `builtin` in `builtins.pyi` too, so
+`inherits(text("tuple") & class.builtin) class` means subclasses of the real `tuple`, not of
+any class named `tuple`.
+
 ### doc, signature
 
 ```ini

@@ -49,6 +49,15 @@ describe("Python, with Pylance", () => {
       assert.deepEqual(unsupportedWarnings("python"), []);
     });
 
+    it("inherits(): the builtin tuple, not a class of the same name", async () => {
+      // Pylance marks builtins where builtins.pyi declares them too: class.declaration.builtin.
+      await setRules('inherits(text("tuple") & class.builtin) class = #00AAAA', 'inherits(text("tuple") & !class.builtin) class = #AA00AA');
+      await eventually(async () => assert.equal(await drawnColor(main, 35, "Pair"), "#00AAAA"));
+      const shadow = await open("python/shadow.py");
+      await eventually(async () => assert.equal(await drawnColor(shadow, 4, "Fake"), "#AA00AA"));
+      main = await open("python/main.py");
+    });
+
     it("custom modifiers from project rules reach other files", async () => {
       await setProjectRules("python", 'contains(text("__slots__") variable.classMember) class += slotted');
       await setRules("class.slotted = #00AA00");
