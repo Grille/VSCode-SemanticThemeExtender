@@ -25,6 +25,14 @@ describe("heads", () => {
       'inherits(decorated(text("dataclass")) contains(doc("*x*") method)) class',
     ]);
   });
+  it("inherits() takes how many levels up to look", () => {
+    assert.deepEqual(heads(['inherits(text("Protocol") | text("Generic"), 1) class = #111111']), ['inherits(text("Protocol") | text("Generic"), 1) class']);
+    assert.deepEqual(problems(['inherits(text("A"), 0) class = #111111', 'inherits(text("B"), 1.5) class = #111111', 'inherits(text("C"), x) class = #111111']), [
+      "1: The number of levels is a whole number from 1 up: inherits(..., 1) looks at direct base types only",
+      "2: The number of levels is a whole number from 1 up: inherits(..., 1) looks at direct base types only",
+      '3: Expected the number of levels, e.g. inherits(text("Protocol"), 1) for direct base types only',
+    ]);
+  });
 });
 
 describe("@expressions", () => {

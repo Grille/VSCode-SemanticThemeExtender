@@ -189,7 +189,9 @@ export type Cond =
   | { kind: "language" | "server"; ids: string[]; range: Range }
   /** text: the token's own text; doc / signature: the prose / the code of its hover; from: the file its definition is in. */
   | { kind: "text" | "doc" | "signature" | "from"; patterns: TextPattern[]; range: Range }
-  | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Cond; range: Range }
+  | { kind: "contains" | "within" | "decorated"; inner: Cond; range: Range }
+  /** levels: how far up to look, 1 for direct base types only; any by default. */
+  | { kind: "inherits"; inner: Cond; levels?: number; range: Range }
   /** theme("*Light*") and dark, light, contrast: the active theme, decided when the rules are applied. */
   | { kind: "theme"; patterns: TextPattern[]; range: Range }
   | { kind: "flag"; flag: Flag; range: Range }
@@ -202,7 +204,8 @@ export type TokenCondition =
   | { kind: "selector"; selector: string }
   | { kind: "language" | "server"; ids: string[] }
   | { kind: "text" | "doc" | "signature" | "from"; patterns: TextPattern[] }
-  | { kind: "contains" | "within" | "inherits" | "decorated"; inner: TokenCondition }
+  | { kind: "contains" | "within" | "decorated"; inner: TokenCondition }
+  | { kind: "inherits"; inner: TokenCondition; levels?: number }
   | { kind: "not"; operand: TokenCondition }
   | { kind: "and" | "or"; left: TokenCondition; right: TokenCondition };
 
@@ -219,9 +222,10 @@ export function conditionText(c: TokenCondition, parent?: TokenCondition["kind"]
     case "signature":
     case "from":
       return `${c.kind}(${c.patterns.map(patternText).join(", ")})`;
+    case "inherits":
+      return `inherits(${conditionText(c.inner)}${c.levels ? `, ${c.levels}` : ""})`;
     case "contains":
     case "within":
-    case "inherits":
     case "decorated":
       return `${c.kind}(${conditionText(c.inner)})`;
     case "not":
@@ -250,9 +254,10 @@ export function stripCondition(c: Cond): TokenCondition {
     case "signature":
     case "from":
       return { kind: c.kind, patterns: c.patterns };
+    case "inherits":
+      return { kind: "inherits", inner: stripCondition(c.inner), ...(c.levels && { levels: c.levels }) };
     case "contains":
     case "within":
-    case "inherits":
     case "decorated":
       return { kind: c.kind, inner: stripCondition(c.inner) };
     case "not":
@@ -665,7 +670,27 @@ export function parseRulesFile(text: string): RulesFile {
       next();
       return { kind: "flag", flag: t.text as Flag, range: t.range };
     }
-    for (const kind of ["contains", "within", "inherits", "decorated"] as const) {
+    if (call("inherits")) {
+      next();
+      next();
+      const inner = parseCond();
+      // inherits(x, 1): only so many levels up.
+      let levels: number | undefined;
+      if (isPunct(peek(), ",")) {
+        next();
+        const n = peek();
+        if (n?.type !== "num") return fail("Expected the number of levels, e.g. inherits(text(\"Protocol\"), 1) for direct base types only");
+        next();
+        levels = Number(n.text);
+        if (!Number.isInteger(levels) || levels < 1) {
+          problems.push({ range: n.range, message: "The number of levels is a whole number from 1 up: inherits(..., 1) looks at direct base types only" });
+          levels = undefined;
+        }
+      }
+      const close = expect(")", "')' to close inherits(...)");
+      return { kind: "inherits", inner, ...(levels && { levels }), range: span(t.range, close.range) };
+    }
+    for (const kind of ["contains", "within", "decorated"] as const) {
       if (!call(kind)) continue;
       next();
       next();

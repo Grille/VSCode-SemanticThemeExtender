@@ -167,6 +167,11 @@ describe("symbol conditions", () => {
     assert.deepEqual(colors(main), { "#AA0000": ["1:Child", "2:GrandChild", "2:Child", "8:GrandChild", "11:Sub", "12:SubKeep"] });
   });
 
+  it("inherits(..., 1): direct base types only", async () => {
+    const { main } = await draw([`inherits(${SLOTS}, 1) class = #AA0000`]);
+    assert.deepEqual(colors(main), { "#AA0000": ["1:Child", "2:Child", "11:Sub", "12:SubKeep"] });
+  });
+
   it("from: where names are defined, also outside the workspace, asked once per name", async () => {
     const files = project();
     // base.py is a library now.

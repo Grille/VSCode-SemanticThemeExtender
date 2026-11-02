@@ -188,6 +188,11 @@ here subclasses of classes that define `__slots__`, also when the base lives in 
 library. Uses the language server's type hierarchy, so it appears a little later. Pylance and
 the C# extension provide one; TypeScript and rust-analyzer don't.
 
+`inherits(…, 1)` looks at direct base types only, `inherits(…, 2)` one level further, and so on.
+In Python a class is a protocol only if `Protocol` is a direct base:
+`inherits(text("Protocol"), 1) class` marks those, not the classes implementing one, nor `str`,
+which typeshed derives from `Sequence` and so, further up, from protocols such as `Iterable`.
+
 The name token is the base type's declaration, with what the language server says about it
 there. Pylance marks builtins as `builtin` in `builtins.pyi` too, so
 `inherits(text("tuple") & class.builtin) class` means subclasses of the real `tuple`, not of

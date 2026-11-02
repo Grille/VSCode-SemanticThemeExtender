@@ -68,6 +68,17 @@ describe("Python, with Pylance", () => {
       main = await open("python/main.py");
     });
 
+    it("inherits(..., 1): direct base types only, e.g. Protocol classes and not str", async () => {
+      // typeshed's str derives from Sequence, which reaches Protocol through Reversible and Collection.
+      const many = await open("python/protocols.py");
+      // Among equally specific rules the later one wins: First matches both.
+      await setRules('inherits(text("Protocol")) class = #0055AA', 'inherits(text("Protocol"), 1) class = #AA5500');
+      await eventually(async () => assert.equal(await drawnColor(many, 21, "str"), "#0055AA"));
+      assert.equal(await drawnColor(many, 3, "First"), "#AA5500");
+      assert.equal(await drawnColor(many, 20, "Impl"), "#0055AA");
+      main = await open("python/main.py");
+    });
+
     it("aliases stand for their type: LS = Outer.Sockets", async () => {
       // Pylance marks LS a class, without a type hierarchy; its type definition is Sockets.
       const alias = await open("python/alias.py");

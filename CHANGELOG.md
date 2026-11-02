@@ -25,6 +25,7 @@
 - Messages: `head := warn("{text} ...")` (or `error`, `info`, `hint`) puts a diagnostic on every matching token in open files; `warn(name, "...")` names one, and `semantic-theme: ignore [name]` in a comment silences it, with a quick fix to add that comment.
 - **Inspect Token** command: type, modifiers (custom ones with their origin) and matching drawn rules for the token at the cursor.
 - Project rules in `.vscode/semantic-theme.ste`: per workspace folder, applied on save, drawn as decorations so windows don't share them; trusted workspaces only.
+- `inherits(…, 1)`: only so many levels up the type hierarchy, e.g. classes listing `Protocol` as a direct base.
 - Aliases (`LS = Outer.Sockets`) stand for their type: `inherits()`, `contains()`, `decorated()` and custom modifiers look at the type, found with go to type definition.
 - Project rules' custom modifiers reach library files outside the workspace that the project's files lead to (a base type in `builtins.pyi`); library files are tagged only where asked, so `inherits()` there stays fast.
 - `@name => head` names a selector expression for reuse in heads as `@name`.

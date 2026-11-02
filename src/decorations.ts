@@ -50,7 +50,9 @@ type Condition =
   /** Tests for the path of the file a name is defined in. */
   | { kind: "from"; files: ((path: string) => boolean)[] }
   | { kind: "selector"; matcher: Matcher }
-  | { kind: "contains" | "within" | "inherits" | "decorated"; inner: Condition }
+  | { kind: "contains" | "within" | "decorated"; inner: Condition }
+  /** levels: how far up the type hierarchy to look. */
+  | { kind: "inherits"; inner: Condition; levels: number }
   | { kind: "not"; operand: Condition }
   | { kind: "and" | "or"; left: Condition; right: Condition }
   /** What language() and server() fold to in a given document. */
@@ -272,9 +274,10 @@ function compileCondition(c: TokenCondition): Condition {
       const { type, modifiers, language } = parseSelector(c.selector);
       return { kind: "selector", matcher: { type, modifiers, language } };
     }
+    case "inherits":
+      return { kind: "inherits", inner: compileCondition(c.inner), levels: Math.min(c.levels ?? MAX_DEPTH, MAX_DEPTH) };
     case "contains":
     case "within":
-    case "inherits":
     case "decorated":
       return { kind: c.kind, inner: compileCondition(c.inner) };
     case "not":
@@ -794,9 +797,9 @@ class DocData {
   }
 
   /** Whether a type token's type has a base type whose name token meets inner. */
-  private inheritsAt(t: Token, inner: Condition): Promise<boolean> {
+  private inheritsAt(t: Token, inner: Condition, levels: number): Promise<boolean> {
     const alias = this.aliases.get(t.text);
-    return alias ? this.anyBase(alias.data.doc.uri, alias.token.range.start, inner) : this.anyBase(this.doc.uri, t.range.start, inner);
+    return alias ? this.anyBase(alias.data.doc.uri, alias.token.range.start, inner, levels) : this.anyBase(this.doc.uri, t.range.start, inner, levels);
   }
 
   /** c as it is in this document: see fold(). */
@@ -834,7 +837,7 @@ class DocData {
         const todo = types.filter((t) => !asked!.has(t.text)).slice(0, Math.max(0, MAX_TYPES - asked.size));
         const found = yes;
         const run = inBatches(todo, async (t) => {
-          if (await this.inheritsAt(t, c.inner)) found.add(t.text);
+          if (await this.inheritsAt(t, c.inner, c.levels)) found.add(t.text);
         });
         for (const t of todo) asked.set(t.text, run);
         await Promise.all(new Set(types.map((t) => asked!.get(t.text)).filter((p): p is Promise<void> => !!p)));
@@ -959,10 +962,10 @@ class DocData {
     return names;
   }
 
-  private async anyBase(uri: vscode.Uri, at: vscode.Position, inner: Condition): Promise<boolean> {
+  private async anyBase(uri: vscode.Uri, at: vscode.Position, inner: Condition, levels: number): Promise<boolean> {
     const seen = new Set<string>();
     let level = [{ uri, at }];
-    for (let depth = 0; depth < MAX_DEPTH && level.length; depth++) {
+    for (let depth = 0; depth < levels && level.length; depth++) {
       const next: typeof level = [];
       for (const type of level) {
         for (const base of await supertypesAt(type.uri, type.at)) {
