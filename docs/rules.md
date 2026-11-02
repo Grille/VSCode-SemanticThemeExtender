@@ -230,7 +230,9 @@ edit; `contains`, `decorated` and `within` match nothing there until then.
 
 Wherever a pattern is taken (`text`, `doc`, `signature`, `theme`, `match($theme)`), it is either:
 
-- a quoted glob, where `*` matches anything and the whole text must match: `"*Light*"`
+- a quoted glob, where `*` matches anything and the whole text must match: `"*Light*"`. In
+  `text` it is case-sensitive; for a language that isn't, use `/^name$/i`. `doc`, `signature`
+  and theme names ignore case.
 - a regular expression literal, for advanced cases: `/^Dark/i`, `signature(/: int\b/)`,
   `text(/^_[a-z]/)`. It's found anywhere unless anchored with `^` / `$`, and takes its flags as
   written (`i` for any case). Invalid ones are reported as you type.
