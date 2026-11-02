@@ -1,7 +1,8 @@
 {
   "name": "semantic-theme-extender",
   "displayName": "Semantic Theme Extender",
-  "description": "Adds colors for structs, interfaces, enums and type parameters to any theme, derived from the theme's own palette. Rules live in a synced, editable rules file.",
+  "description": "Colors what your theme leaves out: structs, interfaces, enums and more, derived from the theme's own palette. A rules file colors tokens by what the language server knows: base types, decorators, docs, members.",
+  "preview": true,
   "version": "0.1.0",
   "publisher": "Grille",
   "license": "MIT",

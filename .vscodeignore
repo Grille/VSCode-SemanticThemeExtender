@@ -12,3 +12,5 @@ theme_extension.cfg
 scripts/**
 examples/**
 .vscode-test/**
+docs/**
+CONTRIBUTING.md
