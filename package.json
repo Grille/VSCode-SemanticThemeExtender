@@ -3,7 +3,7 @@
   "displayName": "Semantic Theme Extender",
   "description": "Colors what your theme leaves out: structs, interfaces, enums and more, derived from the theme's own palette. A rules file colors tokens by what the language server knows: base types, decorators, docs, members.",
   "preview": true,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "Grille",
   "license": "MIT",
   "icon": "icon.png",
